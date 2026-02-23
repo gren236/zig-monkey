@@ -28,6 +28,8 @@ pub const TokenType = enum {
 
     LT,
     GT,
+    EQ,
+    NOT_EQ,
 
     // Delimiters
     COMMA,
@@ -91,6 +93,14 @@ fn readChar(self: *@This()) void {
     self.read_position += 1;
 }
 
+fn peekChar(self: *@This()) u8 {
+    if (self.read_position >= self.input.len) {
+        return 0;
+    }
+
+    return self.input[self.read_position];
+}
+
 fn skipWhitespace(self: *@This()) void {
     while (self.ch == ' ' or self.ch == '\t' or self.ch == '\n' or self.ch == '\r') {
         self.readChar();
@@ -131,10 +141,22 @@ pub fn nextToken(self: *@This()) Token {
     self.skipWhitespace();
 
     const tok = sw: switch (self.ch) {
-        '=' => Token{ .token_type = TokenType.ASSIGN, .literal = self.getCurrentCharString() },
+        '=' => if (self.peekChar() == '=') {
+            const tok_literal = self.input[self.position .. self.position + 2];
+            self.readChar(); // skip second char since it's the same token
+            break :sw Token{ .token_type = TokenType.EQ, .literal = tok_literal };
+        } else {
+            break :sw Token{ .token_type = TokenType.ASSIGN, .literal = self.getCurrentCharString() };
+        },
         '+' => Token{ .token_type = TokenType.PLUS, .literal = self.getCurrentCharString() },
         '-' => Token{ .token_type = TokenType.MINUS, .literal = self.getCurrentCharString() },
-        '!' => Token{ .token_type = TokenType.BANG, .literal = self.getCurrentCharString() },
+        '!' => if (self.peekChar() == '=') {
+            const tok_literal = self.input[self.position .. self.position + 2];
+            self.readChar(); // skip second char since it's the same token
+            break :sw Token{ .token_type = TokenType.NOT_EQ, .literal = tok_literal };
+        } else {
+            break :sw Token{ .token_type = TokenType.BANG, .literal = self.getCurrentCharString() };
+        },
         '/' => Token{ .token_type = TokenType.SLASH, .literal = self.getCurrentCharString() },
         '*' => Token{ .token_type = TokenType.ASTERISK, .literal = self.getCurrentCharString() },
         '<' => Token{ .token_type = TokenType.LT, .literal = self.getCurrentCharString() },
@@ -179,6 +201,9 @@ test nextToken {
         \\ } else {
         \\   return false;
         \\ }
+        \\
+        \\ 10 == 10;
+        \\ 10 != 9;
     ;
 
     const tests = [_]struct {
@@ -250,6 +275,14 @@ test nextToken {
         .{ .expectedType = TokenType.FALSE, .expectedLiteral = "false" },
         .{ .expectedType = TokenType.SEMICOLON, .expectedLiteral = ";" },
         .{ .expectedType = TokenType.RBRACE, .expectedLiteral = "}" },
+        .{ .expectedType = TokenType.INT, .expectedLiteral = "10" },
+        .{ .expectedType = TokenType.EQ, .expectedLiteral = "==" },
+        .{ .expectedType = TokenType.INT, .expectedLiteral = "10" },
+        .{ .expectedType = TokenType.SEMICOLON, .expectedLiteral = ";" },
+        .{ .expectedType = TokenType.INT, .expectedLiteral = "10" },
+        .{ .expectedType = TokenType.NOT_EQ, .expectedLiteral = "!=" },
+        .{ .expectedType = TokenType.INT, .expectedLiteral = "9" },
+        .{ .expectedType = TokenType.SEMICOLON, .expectedLiteral = ";" },
         .{ .expectedType = TokenType.EOF, .expectedLiteral = "" },
     };
 
