@@ -16,6 +16,13 @@ pub const TokenType = enum {
     // Operators
     ASSIGN,
     PLUS,
+    MINUS,
+    BANG,
+    ASTERISK,
+    SLASH,
+
+    LT,
+    GT,
 
     // Delimiters
     COMMA,
@@ -110,11 +117,17 @@ pub fn nextToken(self: *@This()) Token {
 
     const tok = sw: switch (self.ch) {
         '=' => Token{ .token_type = TokenType.ASSIGN, .literal = self.getCurrentCharString() },
+        '+' => Token{ .token_type = TokenType.PLUS, .literal = self.getCurrentCharString() },
+        '-' => Token{ .token_type = TokenType.MINUS, .literal = self.getCurrentCharString() },
+        '!' => Token{ .token_type = TokenType.BANG, .literal = self.getCurrentCharString() },
+        '/' => Token{ .token_type = TokenType.SLASH, .literal = self.getCurrentCharString() },
+        '*' => Token{ .token_type = TokenType.ASTERISK, .literal = self.getCurrentCharString() },
+        '<' => Token{ .token_type = TokenType.LT, .literal = self.getCurrentCharString() },
+        '>' => Token{ .token_type = TokenType.GT, .literal = self.getCurrentCharString() },
         ';' => Token{ .token_type = TokenType.SEMICOLON, .literal = self.getCurrentCharString() },
         '(' => Token{ .token_type = TokenType.LPAREN, .literal = self.getCurrentCharString() },
         ')' => Token{ .token_type = TokenType.RPAREN, .literal = self.getCurrentCharString() },
         ',' => Token{ .token_type = TokenType.COMMA, .literal = self.getCurrentCharString() },
-        '+' => Token{ .token_type = TokenType.PLUS, .literal = self.getCurrentCharString() },
         '{' => Token{ .token_type = TokenType.LBRACE, .literal = self.getCurrentCharString() },
         '}' => Token{ .token_type = TokenType.RBRACE, .literal = self.getCurrentCharString() },
         0 => Token{ .token_type = TokenType.EOF, .literal = "" },
@@ -143,6 +156,8 @@ test nextToken {
         \\ };
         \\
         \\ let result = add(five, ten);
+        \\ !-/*5;
+        \\ 5 < 10 > 5;
     ;
 
     const tests = [_]struct {
@@ -184,6 +199,18 @@ test nextToken {
         .{ .expectedType = TokenType.COMMA, .expectedLiteral = "," },
         .{ .expectedType = TokenType.IDENT, .expectedLiteral = "ten" },
         .{ .expectedType = TokenType.RPAREN, .expectedLiteral = ")" },
+        .{ .expectedType = TokenType.SEMICOLON, .expectedLiteral = ";" },
+        .{ .expectedType = TokenType.BANG, .expectedLiteral = "!" },
+        .{ .expectedType = TokenType.MINUS, .expectedLiteral = "-" },
+        .{ .expectedType = TokenType.SLASH, .expectedLiteral = "/" },
+        .{ .expectedType = TokenType.ASTERISK, .expectedLiteral = "*" },
+        .{ .expectedType = TokenType.INT, .expectedLiteral = "5" },
+        .{ .expectedType = TokenType.SEMICOLON, .expectedLiteral = ";" },
+        .{ .expectedType = TokenType.INT, .expectedLiteral = "5" },
+        .{ .expectedType = TokenType.LT, .expectedLiteral = "<" },
+        .{ .expectedType = TokenType.INT, .expectedLiteral = "10" },
+        .{ .expectedType = TokenType.GT, .expectedLiteral = ">" },
+        .{ .expectedType = TokenType.INT, .expectedLiteral = "5" },
         .{ .expectedType = TokenType.SEMICOLON, .expectedLiteral = ";" },
         .{ .expectedType = TokenType.EOF, .expectedLiteral = "" },
     };
