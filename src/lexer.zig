@@ -3,6 +3,11 @@ const std = @import("std");
 const TokenKeyword = enum {
     @"fn",
     let,
+    true,
+    false,
+    @"if",
+    @"else",
+    @"return",
 };
 
 pub const TokenType = enum {
@@ -36,12 +41,22 @@ pub const TokenType = enum {
     // Keywords
     FUNCTION,
     LET,
+    TRUE,
+    FALSE,
+    IF,
+    ELSE,
+    RETURN,
 
     inline fn lookupIdent(ident: []const u8) TokenType {
         const tok_keyword = std.meta.stringToEnum(TokenKeyword, ident) orelse return .IDENT;
         return switch (tok_keyword) {
             TokenKeyword.@"fn" => .FUNCTION,
             TokenKeyword.let => .LET,
+            TokenKeyword.true => .TRUE,
+            TokenKeyword.false => .FALSE,
+            TokenKeyword.@"if" => .IF,
+            TokenKeyword.@"else" => .ELSE,
+            TokenKeyword.@"return" => .RETURN,
         };
     }
 };
@@ -158,6 +173,12 @@ test nextToken {
         \\ let result = add(five, ten);
         \\ !-/*5;
         \\ 5 < 10 > 5;
+        \\
+        \\ if (5 < 10) {
+        \\   return true;
+        \\ } else {
+        \\   return false;
+        \\ }
     ;
 
     const tests = [_]struct {
@@ -212,6 +233,23 @@ test nextToken {
         .{ .expectedType = TokenType.GT, .expectedLiteral = ">" },
         .{ .expectedType = TokenType.INT, .expectedLiteral = "5" },
         .{ .expectedType = TokenType.SEMICOLON, .expectedLiteral = ";" },
+        .{ .expectedType = TokenType.IF, .expectedLiteral = "if" },
+        .{ .expectedType = TokenType.LPAREN, .expectedLiteral = "(" },
+        .{ .expectedType = TokenType.INT, .expectedLiteral = "5" },
+        .{ .expectedType = TokenType.LT, .expectedLiteral = "<" },
+        .{ .expectedType = TokenType.INT, .expectedLiteral = "10" },
+        .{ .expectedType = TokenType.RPAREN, .expectedLiteral = ")" },
+        .{ .expectedType = TokenType.LBRACE, .expectedLiteral = "{" },
+        .{ .expectedType = TokenType.RETURN, .expectedLiteral = "return" },
+        .{ .expectedType = TokenType.TRUE, .expectedLiteral = "true" },
+        .{ .expectedType = TokenType.SEMICOLON, .expectedLiteral = ";" },
+        .{ .expectedType = TokenType.RBRACE, .expectedLiteral = "}" },
+        .{ .expectedType = TokenType.ELSE, .expectedLiteral = "else" },
+        .{ .expectedType = TokenType.LBRACE, .expectedLiteral = "{" },
+        .{ .expectedType = TokenType.RETURN, .expectedLiteral = "return" },
+        .{ .expectedType = TokenType.FALSE, .expectedLiteral = "false" },
+        .{ .expectedType = TokenType.SEMICOLON, .expectedLiteral = ";" },
+        .{ .expectedType = TokenType.RBRACE, .expectedLiteral = "}" },
         .{ .expectedType = TokenType.EOF, .expectedLiteral = "" },
     };
 
