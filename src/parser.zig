@@ -3,6 +3,10 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const Lexer = @import("lexer.zig");
 
+test {
+    std.testing.refAllDecls(@This());
+}
+
 l: *Lexer,
 
 cur_token: Lexer.Token = undefined,
@@ -70,7 +74,7 @@ fn parseReturnStatement(self: *@This(), alloc: std.mem.Allocator) ast.Node(.Stat
         self.nextToken();
     }
 
-    return ast.Node(.Statement){ .let_stmt = stmt };
+    return ast.Node(.Statement){ .val = .{ .return_stmt = stmt } };
 }
 
 fn parseLetStatement(self: *@This(), alloc: std.mem.Allocator) !?ast.Node(.Statement) {
@@ -87,7 +91,7 @@ fn parseLetStatement(self: *@This(), alloc: std.mem.Allocator) !?ast.Node(.State
         self.nextToken();
     }
 
-    return ast.Node(.Statement){ .let_stmt = stmt };
+    return ast.Node(.Statement){ .val = .{ .let_stmt = stmt } };
 }
 
 fn expectPeek(self: *@This(), alloc: std.mem.Allocator, t: Lexer.TokenType) !bool {
@@ -160,7 +164,7 @@ test "let statements" {
 
         try std.testing.expectEqualStrings(stmt.tokenLiteral(), "let");
 
-        var let_stmt = stmt.let_stmt;
+        var let_stmt = stmt.val.let_stmt;
         try std.testing.expectEqualStrings(t.expectedIdentifier, let_stmt.name.value);
         try std.testing.expectEqualStrings(t.expectedIdentifier, let_stmt.name.tokenLiteral());
     }
@@ -202,7 +206,7 @@ test "return statements" {
     try std.testing.expectEqual(3, program.statements.len);
 
     for (program.statements) |stmt| {
-        var return_stmt = stmt.return_stmt;
+        var return_stmt = stmt.val.return_stmt;
         try std.testing.expectEqualStrings("return", return_stmt.tokenLiteral());
     }
 }
