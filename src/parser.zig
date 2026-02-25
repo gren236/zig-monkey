@@ -1,6 +1,7 @@
 const std = @import("std");
-const Lexer = @import("lexer.zig");
+
 const ast = @import("ast.zig");
+const Lexer = @import("lexer.zig");
 
 l: *Lexer,
 
@@ -52,8 +53,24 @@ fn nextToken(self: *@This()) void {
 fn parseStatement(self: *@This(), alloc: std.mem.Allocator) !?ast.Node(.Statement) {
     return switch (self.cur_token.token_type) {
         .LET => try self.parseLetStatement(alloc),
+        .RETURN => self.parseReturnStatement(alloc),
         else => null,
     };
+}
+
+fn parseReturnStatement(self: *@This(), alloc: std.mem.Allocator) ast.Node(.Statement) {
+    _ = alloc;
+
+    const stmt = ast.ReturnStatement{ .token = self.cur_token };
+
+    self.nextToken();
+
+    // TODO: We're skipping the expressions until we encounter a semicolon
+    while (self.cur_token.token_type != Lexer.TokenType.SEMICOLON) {
+        self.nextToken();
+    }
+
+    return ast.Node(.Statement){ .let_stmt = stmt };
 }
 
 fn parseLetStatement(self: *@This(), alloc: std.mem.Allocator) !?ast.Node(.Statement) {
@@ -163,4 +180,29 @@ test "invalid let statements" {
 
     try std.testing.expectEqual(1, p.errors.items.len);
     try std.testing.expectEqualStrings("expected next token to be IDENT, got INT", p.errors.items[0]);
+}
+
+test "return statements" {
+    const input =
+        \\ return 5;
+        \\ return 10;
+        \\ return 838383;
+    ;
+
+    const alloc = std.testing.allocator;
+
+    var l = Lexer.init(input);
+    var p = init(&l);
+    defer p.deinit(alloc);
+
+    var program = try p.parseProgram(alloc);
+    defer program.deinit(alloc);
+
+    try checkParserErrors(&p);
+    try std.testing.expectEqual(3, program.statements.len);
+
+    for (program.statements) |stmt| {
+        var return_stmt = stmt.return_stmt;
+        try std.testing.expectEqualStrings("return", return_stmt.tokenLiteral());
+    }
 }

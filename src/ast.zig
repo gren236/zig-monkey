@@ -1,4 +1,5 @@
 const std = @import("std");
+
 const Lexer = @import("lexer.zig");
 
 pub const NodeType = enum {
@@ -20,6 +21,7 @@ pub fn Node(comptime T: NodeType) type {
         },
         .Statement => union(enum) {
             let_stmt: LetStatement,
+            return_stmt: ReturnStatement,
 
             pub fn tokenLiteral(self: Node(T)) []const u8 {
                 return switch (self) {
@@ -70,6 +72,15 @@ pub const Identifier = struct {
     value: []const u8,
 
     pub fn tokenLiteral(self: Identifier) []const u8 {
+        return self.token.literal;
+    }
+};
+
+pub const ReturnStatement = struct {
+    token: Lexer.Token,
+    return_value: Node(.Expression) = undefined,
+
+    pub fn tokenLiteral(self: ReturnStatement) []const u8 {
         return self.token.literal;
     }
 };
