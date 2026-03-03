@@ -7,6 +7,22 @@ test {
     std.testing.refAllDecls(@This());
 }
 
+const PrefixParseFn = *const fn (*@This()) ast.Node(.Expression);
+const InfixParseFn = *const fn (*@This(), ast.Node(.Expression)) ast.Node(.Expression);
+
+fn getPrefixParseFnFromNodeType(token_type: Lexer.TokenType) !PrefixParseFn {
+    return switch (token_type) {
+        .IDENT => parseIdentifier,
+        else => error.UnrecognisedTokenType,
+    };
+}
+
+fn parseIdentifier(self: *@This()) ast.Node(.Expression) {
+    return ast.Node(.Expression){ .val = .{
+        .ident = .{ .token = self.cur_token, .value = self.cur_token.literal },
+    } };
+}
+
 l: *Lexer,
 
 cur_token: Lexer.Token = undefined,
@@ -58,7 +74,7 @@ fn parseStatement(self: *@This(), alloc: std.mem.Allocator) !?ast.Node(.Statemen
     return switch (self.cur_token.token_type) {
         .LET => try self.parseLetStatement(alloc),
         .RETURN => self.parseReturnStatement(alloc),
-        else => null,
+        else => try self.parseExpressionStatement(alloc),
     };
 }
 
@@ -92,6 +108,33 @@ fn parseLetStatement(self: *@This(), alloc: std.mem.Allocator) !?ast.Node(.State
     }
 
     return ast.Node(.Statement){ .val = .{ .let_stmt = stmt } };
+}
+
+fn parseExpressionStatement(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Statement) {
+    var stmt = ast.ExpressionStatement{ .token = self.cur_token };
+
+    stmt.expression = try self.parseExpression(.lowest);
+
+    if (try self.expectPeek(alloc, Lexer.TokenType.SEMICOLON)) self.nextToken();
+
+    return ast.Node(.Statement){ .val = .{ .expression_stmt = stmt } };
+}
+
+// Order matters: later it appears, the more precedence it has
+const Precedence = enum {
+    lowest,
+    equals, // ==
+    lessgreater, // < or >
+    sum, // +
+    product, // *
+    prefix, // -X or !X
+    call, // myFunction(X)
+};
+
+fn parseExpression(self: *@This(), _: Precedence) !ast.Node(.Expression) {
+    const prefix = try getPrefixParseFnFromNodeType(self.cur_token.token_type);
+
+    return prefix(self);
 }
 
 fn expectPeek(self: *@This(), alloc: std.mem.Allocator, t: Lexer.TokenType) !bool {
@@ -170,22 +213,6 @@ test "let statements" {
     }
 }
 
-test "invalid let statements" {
-    const input = "let 838383;";
-
-    const alloc = std.testing.allocator;
-
-    var l = Lexer.init(input);
-    var p = init(&l);
-    defer p.deinit(alloc);
-
-    var program = try p.parseProgram(alloc);
-    defer program.deinit(alloc);
-
-    try std.testing.expectEqual(1, p.errors.items.len);
-    try std.testing.expectEqualStrings("expected next token to be IDENT, got INT", p.errors.items[0]);
-}
-
 test "return statements" {
     const input =
         \\ return 5;
@@ -209,4 +236,24 @@ test "return statements" {
         var return_stmt = stmt.val.return_stmt;
         try std.testing.expectEqualStrings("return", return_stmt.tokenLiteral());
     }
+}
+
+test "identifier expression" {
+    const input = "foobar;";
+
+    const alloc = std.testing.allocator;
+
+    var l = Lexer.init(input);
+    var p = init(&l);
+    defer p.deinit(alloc);
+
+    var program = try p.parseProgram(alloc);
+    defer program.deinit(alloc);
+
+    try checkParserErrors(&p);
+    try std.testing.expectEqual(1, program.statements.len);
+
+    var ident = program.statements[0].val.expression_stmt.expression.val.ident;
+    try std.testing.expectEqualStrings("foobar", ident.value);
+    try std.testing.expectEqualStrings("foobar", ident.tokenLiteral());
 }
