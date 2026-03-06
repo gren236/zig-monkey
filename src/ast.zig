@@ -20,6 +20,7 @@ pub const StatementNode = union(enum) {
 
 pub const ExpressionNode = union(enum) {
     ident: Identifier,
+    int_literal: IntegerLiteral,
 };
 
 pub fn Node(comptime T: NodeType) type {
@@ -126,6 +127,19 @@ pub const Identifier = struct {
 
     pub fn writeString(self: Identifier, writer: *std.Io.Writer) !void {
         _ = try writer.write(self.value);
+    }
+};
+
+pub const IntegerLiteral = struct {
+    token: Lexer.Token,
+    value: i64,
+
+    pub fn tokenLiteral(self: IntegerLiteral) []const u8 {
+        return self.token.literal;
+    }
+
+    pub fn writeString(self: IntegerLiteral, writer: *std.Io.Writer) !void {
+        _ = try writer.write(self.token.literal);
     }
 };
 
