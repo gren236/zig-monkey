@@ -7,14 +7,21 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-const PrefixParseFn = *const fn (*@This(), alloc: std.mem.Allocator) anyerror!ast.Node(.Expression);
-const InfixParseFn = *const fn (*@This(), ast.Node(.Expression)) anyerror!ast.Node(.Expression);
+const PrefixParseFn = *const fn (*@This(), std.mem.Allocator) anyerror!ast.Node(.Expression);
+const InfixParseFn = *const fn (*@This(), std.mem.Allocator, ast.Node(.Expression)) anyerror!ast.Node(.Expression);
 
-fn getPrefixParseFnFromNodeType(token_type: Lexer.TokenType) !PrefixParseFn {
+inline fn getPrefixParseFnFromNodeType(token_type: Lexer.TokenType) !PrefixParseFn {
     return switch (token_type) {
         .IDENT => parseIdentifier,
         .INT => parseIntegerLiteral,
         .BANG, .MINUS => parsePrefixExpression,
+        else => error.UnrecognisedTokenType,
+    };
+}
+
+inline fn getInfixParseFnFromNodeType(token_type: Lexer.TokenType) !InfixParseFn {
+    return switch (token_type) {
+        .PLUS, .MINUS, .SLASH, .ASTERISK, .EQ, .NOT_EQ, .LT, .GT => parseInfixExpression,
         else => error.UnrecognisedTokenType,
     };
 }
@@ -124,7 +131,7 @@ fn parseExpressionStatement(self: *@This(), alloc: std.mem.Allocator) !ast.Node(
         try self.parseExpression(alloc, .lowest),
     );
 
-    if (try self.expectPeek(alloc, Lexer.TokenType.SEMICOLON)) self.nextToken();
+    if (self.peek_token.token_type == .SEMICOLON) self.nextToken();
 
     return ast.Node(.Statement){ .val = .{ .expression_stmt = stmt } };
 }
@@ -142,10 +149,40 @@ const Precedence = enum {
     call, // myFunction(X)
 };
 
-fn parseExpression(self: *@This(), alloc: std.mem.Allocator, _: Precedence) !ast.Node(.Expression) {
+inline fn getPrecedenceByTokenType(tok_type: Lexer.TokenType) Precedence {
+    return switch (tok_type) {
+        .EQ, .NOT_EQ => .equals,
+        .LT, .GT => .lessgreater,
+        .PLUS, .MINUS => .sum,
+        .SLASH, .ASTERISK => .product,
+        else => .lowest,
+    };
+}
+
+fn peekPrecedence(self: *@This()) Precedence {
+    return getPrecedenceByTokenType(self.peek_token.token_type);
+}
+
+fn curPrecedence(self: *@This()) Precedence {
+    return getPrecedenceByTokenType(self.cur_token.token_type);
+}
+
+fn parseExpression(self: *@This(), alloc: std.mem.Allocator, prec: Precedence) !ast.Node(.Expression) {
     const prefix = try getPrefixParseFnFromNodeType(self.cur_token.token_type);
 
-    return try prefix(self, alloc);
+    var left_exp = try prefix(self, alloc);
+
+    while (self.peek_token.token_type != .SEMICOLON and @intFromEnum(prec) < @intFromEnum(self.peekPrecedence())) {
+        const inflix = getInfixParseFnFromNodeType(self.peek_token.token_type) catch {
+            return left_exp;
+        };
+
+        self.nextToken();
+
+        left_exp = try inflix(self, alloc, left_exp);
+    }
+
+    return left_exp;
 }
 
 fn parseIdentifier(self: *@This(), _: std.mem.Allocator) !ast.Node(.Expression) {
@@ -178,6 +215,24 @@ fn parsePrefixExpression(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Ex
     } };
 }
 
+fn parseInfixExpression(self: *@This(), alloc: std.mem.Allocator, left: ast.Node(.Expression)) !ast.Node(.Expression) {
+    const infix_tok = self.cur_token;
+    const infix_op = self.cur_token.literal;
+    const prec = self.curPrecedence();
+
+    self.nextToken();
+
+    return ast.Node(.Expression){ .val = .{
+        .infix = try ast.InfixExpression.init(
+            alloc,
+            infix_tok,
+            left,
+            infix_op,
+            try self.parseExpression(alloc, prec),
+        ),
+    } };
+}
+
 fn expectPeek(self: *@This(), alloc: std.mem.Allocator, t: Lexer.TokenType) !bool {
     if (self.peek_token.token_type != t) {
         try self.peekError(alloc, t);
@@ -192,7 +247,7 @@ pub fn parseProgram(self: *@This(), alloc: std.mem.Allocator) !ast.Program {
     var program = ast.Program{};
     var stmts = std.ArrayList(ast.Node(.Statement)).empty;
 
-    while (self.cur_token.token_type != Lexer.TokenType.EOF) {
+    while (self.cur_token.token_type != .EOF) {
         const stmt = try self.parseStatement(alloc);
         if (stmt != null) try stmts.append(alloc, stmt.?);
 
@@ -351,5 +406,119 @@ test "prefix expressions" {
         const exp = program.statements[0].val.expression_stmt.expression.val.prefix;
         try std.testing.expectEqualStrings(t.operator, exp.operator);
         try testIntegerLiteral(exp.right, t.integer_value);
+    }
+}
+
+test "infix expressions" {
+    const alloc = std.testing.allocator;
+
+    const tests = [_]struct {
+        input: []const u8,
+        left_value: i64,
+        operator: []const u8,
+        right_value: i64,
+    }{
+        .{ .input = "5 + 5;", .left_value = 5, .operator = "+", .right_value = 5 },
+        .{ .input = "5 - 5;", .left_value = 5, .operator = "-", .right_value = 5 },
+        .{ .input = "5 * 5;", .left_value = 5, .operator = "*", .right_value = 5 },
+        .{ .input = "5 / 5;", .left_value = 5, .operator = "/", .right_value = 5 },
+        .{ .input = "5 > 5;", .left_value = 5, .operator = ">", .right_value = 5 },
+        .{ .input = "5 < 5;", .left_value = 5, .operator = "<", .right_value = 5 },
+        .{ .input = "5 == 5;", .left_value = 5, .operator = "==", .right_value = 5 },
+        .{ .input = "5 != 5;", .left_value = 5, .operator = "!=", .right_value = 5 },
+    };
+
+    for (tests) |t| {
+        var l = Lexer.init(t.input);
+        var p = init(&l);
+        defer p.deinit(alloc);
+
+        var program = try p.parseProgram(alloc);
+        defer program.deinit(alloc);
+
+        try checkParserErrors(&p);
+        try std.testing.expectEqual(1, program.statements.len);
+
+        const exp = program.statements[0].val.expression_stmt.expression.val.infix;
+        try testIntegerLiteral(exp.left, t.left_value);
+        try std.testing.expectEqualStrings(t.operator, exp.operator);
+        try testIntegerLiteral(exp.right, t.right_value);
+    }
+}
+
+test "operator precedence" {
+    const alloc = std.testing.allocator;
+
+    const tests = [_]struct {
+        input: []const u8,
+        expected: []const u8,
+    }{
+        .{
+            .input = "-a * b",
+            .expected = "((-a) * b)",
+        },
+        .{
+            .input = "!-a",
+            .expected = "(!(-a))",
+        },
+        .{
+            .input = "a + b + c",
+            .expected = "((a + b) + c)",
+        },
+        .{
+            .input = "a + b - c",
+            .expected = "((a + b) - c)",
+        },
+        .{
+            .input = "a * b * c",
+            .expected = "((a * b) * c)",
+        },
+        .{
+            .input = "a * b / c",
+            .expected = "((a * b) / c)",
+        },
+        .{
+            .input = "a + b / c",
+            .expected = "(a + (b / c))",
+        },
+        .{
+            .input = "a + b * c + d / e - f",
+            .expected = "(((a + (b * c)) + (d / e)) - f)",
+        },
+        .{
+            .input = "3 + 4; -5 * 5",
+            .expected = "(3 + 4)((-5) * 5)",
+        },
+        .{
+            .input = "5 > 4 == 3 < 4",
+            .expected = "((5 > 4) == (3 < 4))",
+        },
+        .{
+            .input = "5 < 4 != 3 > 4",
+            .expected = "((5 < 4) != (3 > 4))",
+        },
+        .{
+            .input = "3 + 4 * 5 == 3 * 1 + 4 * 5",
+            .expected = "((3 + (4 * 5)) == ((3 * 1) + (4 * 5)))",
+        },
+    };
+
+    for (tests) |t| {
+        var l = Lexer.init(t.input);
+        var p = init(&l);
+        defer p.deinit(alloc);
+
+        var program = try p.parseProgram(alloc);
+        defer program.deinit(alloc);
+
+        try checkParserErrors(&p);
+
+        var buf: [1024]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&buf);
+
+        try program.writeString(&writer);
+        try writer.flush();
+
+        try std.testing.expectEqualStrings(t.expected, buf[0..t.expected.len]);
     }
 }

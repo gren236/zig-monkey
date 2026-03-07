@@ -22,6 +22,7 @@ pub const ExpressionNode = union(enum) {
     ident: Identifier,
     int_literal: IntegerLiteral,
     prefix: PrefixExpression,
+    infix: InfixExpression,
 
     noop: NoopExpression,
 };
@@ -248,6 +249,47 @@ pub const PrefixExpression = struct {
     pub fn writeString(self: PrefixExpression, writer: *std.Io.Writer) !void {
         _ = try writer.write("(");
         _ = try writer.write(self.operator);
+        try self.right.writeString(writer);
+        _ = try writer.write(")");
+    }
+};
+
+pub const InfixExpression = struct {
+    token: Lexer.Token,
+    left: *const Node(.Expression),
+    operator: []const u8,
+    right: *const Node(.Expression),
+
+    pub fn init(alloc: std.mem.Allocator, tok: Lexer.Token, left: Node(.Expression), operator: []const u8, right: Node(.Expression)) !InfixExpression {
+        const left_ptr = try alloc.create(Node(.Expression));
+        left_ptr.* = left;
+
+        const right_ptr = try alloc.create(Node(.Expression));
+        right_ptr.* = right;
+
+        return .{
+            .token = tok,
+            .left = left_ptr,
+            .operator = operator,
+            .right = right_ptr,
+        };
+    }
+
+    pub fn deinit(self: InfixExpression, alloc: std.mem.Allocator) void {
+        self.left.deinit(alloc);
+        self.right.deinit(alloc);
+        alloc.destroy(self.left);
+        alloc.destroy(self.right);
+    }
+
+    pub fn tokenLiteral(self: InfixExpression) []const u8 {
+        return self.token.literal;
+    }
+
+    pub fn writeString(self: InfixExpression, writer: *std.Io.Writer) !void {
+        _ = try writer.write("(");
+        try self.left.writeString(writer);
+        try writer.print(" {s} ", .{self.operator});
         try self.right.writeString(writer);
         _ = try writer.write(")");
     }
