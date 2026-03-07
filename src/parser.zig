@@ -7,13 +7,14 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-const PrefixParseFn = *const fn (*@This()) anyerror!ast.Node(.Expression);
+const PrefixParseFn = *const fn (*@This(), alloc: std.mem.Allocator) anyerror!ast.Node(.Expression);
 const InfixParseFn = *const fn (*@This(), ast.Node(.Expression)) anyerror!ast.Node(.Expression);
 
 fn getPrefixParseFnFromNodeType(token_type: Lexer.TokenType) !PrefixParseFn {
     return switch (token_type) {
         .IDENT => parseIdentifier,
         .INT => parseIntegerLiteral,
+        .BANG, .MINUS => parsePrefixExpression,
         else => error.UnrecognisedTokenType,
     };
 }
@@ -70,15 +71,17 @@ fn nextToken(self: *@This()) void {
 fn parseStatement(self: *@This(), alloc: std.mem.Allocator) !?ast.Node(.Statement) {
     return switch (self.cur_token.token_type) {
         .LET => try self.parseLetStatement(alloc),
-        .RETURN => self.parseReturnStatement(alloc),
+        .RETURN => try self.parseReturnStatement(alloc),
         else => try self.parseExpressionStatement(alloc),
     };
 }
 
-fn parseReturnStatement(self: *@This(), alloc: std.mem.Allocator) ast.Node(.Statement) {
-    _ = alloc;
-
-    const stmt = ast.ReturnStatement{ .token = self.cur_token };
+fn parseReturnStatement(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Statement) {
+    const stmt = try ast.ReturnStatement.init(
+        alloc,
+        self.cur_token,
+        ast.Node(.Expression){ .val = .{ .noop = ast.NoopExpression{} } },
+    );
 
     self.nextToken();
 
@@ -91,11 +94,11 @@ fn parseReturnStatement(self: *@This(), alloc: std.mem.Allocator) ast.Node(.Stat
 }
 
 fn parseLetStatement(self: *@This(), alloc: std.mem.Allocator) !?ast.Node(.Statement) {
-    var stmt = ast.LetStatement{ .token = self.cur_token };
+    const let_tok = self.cur_token;
 
     if (!try self.expectPeek(alloc, Lexer.TokenType.IDENT)) return null;
 
-    stmt.name = ast.Identifier{ .token = self.cur_token, .value = self.cur_token.literal };
+    const stmt_name = ast.Identifier{ .token = self.cur_token, .value = self.cur_token.literal };
 
     if (!try self.expectPeek(alloc, Lexer.TokenType.ASSIGN)) return null;
 
@@ -104,13 +107,22 @@ fn parseLetStatement(self: *@This(), alloc: std.mem.Allocator) !?ast.Node(.State
         self.nextToken();
     }
 
+    const stmt = try ast.LetStatement.init(
+        alloc,
+        let_tok,
+        stmt_name,
+        ast.Node(.Expression){ .val = .{ .noop = ast.NoopExpression{} } },
+    );
+
     return ast.Node(.Statement){ .val = .{ .let_stmt = stmt } };
 }
 
 fn parseExpressionStatement(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Statement) {
-    var stmt = ast.ExpressionStatement{ .token = self.cur_token };
-
-    stmt.expression = try self.parseExpression(.lowest);
+    const stmt = try ast.ExpressionStatement.init(
+        alloc,
+        self.cur_token,
+        try self.parseExpression(alloc, .lowest),
+    );
 
     if (try self.expectPeek(alloc, Lexer.TokenType.SEMICOLON)) self.nextToken();
 
@@ -130,23 +142,39 @@ const Precedence = enum {
     call, // myFunction(X)
 };
 
-fn parseExpression(self: *@This(), _: Precedence) !ast.Node(.Expression) {
+fn parseExpression(self: *@This(), alloc: std.mem.Allocator, _: Precedence) !ast.Node(.Expression) {
     const prefix = try getPrefixParseFnFromNodeType(self.cur_token.token_type);
 
-    return try prefix(self);
+    return try prefix(self, alloc);
 }
 
-fn parseIdentifier(self: *@This()) !ast.Node(.Expression) {
+fn parseIdentifier(self: *@This(), _: std.mem.Allocator) !ast.Node(.Expression) {
     return ast.Node(.Expression){ .val = .{
         .ident = .{ .token = self.cur_token, .value = self.cur_token.literal },
     } };
 }
 
-fn parseIntegerLiteral(self: *@This()) !ast.Node(.Expression) {
+fn parseIntegerLiteral(self: *@This(), _: std.mem.Allocator) !ast.Node(.Expression) {
     const lit = try std.fmt.parseInt(i64, self.cur_token.literal, 10);
 
     return ast.Node(.Expression){ .val = .{
         .int_literal = .{ .token = self.cur_token, .value = lit },
+    } };
+}
+
+fn parsePrefixExpression(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expression) {
+    const prefix_tok = self.cur_token;
+    const prefix_op = self.cur_token.literal;
+
+    self.nextToken();
+
+    return ast.Node(.Expression){ .val = .{
+        .prefix = try ast.PrefixExpression.init(
+            alloc,
+            prefix_tok,
+            prefix_op,
+            try self.parseExpression(alloc, .prefix),
+        ),
     } };
 }
 
@@ -218,7 +246,7 @@ test "let statements" {
     for (0.., tests) |i, t| {
         const stmt = program.statements[i];
 
-        try std.testing.expectEqualStrings(stmt.tokenLiteral(), "let");
+        try std.testing.expectEqualStrings("let", stmt.tokenLiteral());
 
         var let_stmt = stmt.val.let_stmt;
         try std.testing.expectEqualStrings(t.expectedIdentifier, let_stmt.name.value);
@@ -271,6 +299,15 @@ test "identifier expression" {
     try std.testing.expectEqualStrings("foobar", ident.tokenLiteral());
 }
 
+fn testIntegerLiteral(il: *const ast.Node(.Expression), value: i64) !void {
+    var literal = il.val.int_literal;
+    try std.testing.expectEqual(value, literal.value);
+
+    var int_buf: [1024]u8 = undefined;
+    const len = std.fmt.printInt(&int_buf, value, 10, .lower, .{});
+    try std.testing.expectEqualStrings(int_buf[0..len], literal.tokenLiteral());
+}
+
 test "integer expression" {
     const input = "5;";
 
@@ -285,8 +322,34 @@ test "integer expression" {
 
     try checkParserErrors(&p);
     try std.testing.expectEqual(1, program.statements.len);
+    try testIntegerLiteral(program.statements[0].val.expression_stmt.expression, 5);
+}
 
-    var literal = program.statements[0].val.expression_stmt.expression.val.int_literal;
-    try std.testing.expectEqual(5, literal.value);
-    try std.testing.expectEqualStrings("5", literal.tokenLiteral());
+test "prefix expressions" {
+    const alloc = std.testing.allocator;
+
+    const tests = [_]struct {
+        input: []const u8,
+        operator: []const u8,
+        integer_value: i64,
+    }{
+        .{ .input = "!5;", .operator = "!", .integer_value = 5 },
+        .{ .input = "-15;", .operator = "-", .integer_value = 15 },
+    };
+
+    for (tests) |t| {
+        var l = Lexer.init(t.input);
+        var p = init(&l);
+        defer p.deinit(alloc);
+
+        var program = try p.parseProgram(alloc);
+        defer program.deinit(alloc);
+
+        try checkParserErrors(&p);
+        try std.testing.expectEqual(1, program.statements.len);
+
+        const exp = program.statements[0].val.expression_stmt.expression.val.prefix;
+        try std.testing.expectEqualStrings(t.operator, exp.operator);
+        try testIntegerLiteral(exp.right, t.integer_value);
+    }
 }

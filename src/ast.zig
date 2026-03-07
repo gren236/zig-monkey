@@ -21,6 +21,9 @@ pub const StatementNode = union(enum) {
 pub const ExpressionNode = union(enum) {
     ident: Identifier,
     int_literal: IntegerLiteral,
+    prefix: PrefixExpression,
+
+    noop: NoopExpression,
 };
 
 pub fn Node(comptime T: NodeType) type {
@@ -33,13 +36,19 @@ pub fn Node(comptime T: NodeType) type {
     return struct {
         val: NodeUnion,
 
+        pub fn deinit(self: Node(T), alloc: std.mem.Allocator) void {
+            return switch (self.val) {
+                inline else => |node| node.deinit(alloc),
+            };
+        }
+
         pub fn tokenLiteral(self: Node(T)) []const u8 {
             return switch (self.val) {
                 inline else => |node| node.tokenLiteral(),
             };
         }
 
-        pub fn writeString(self: Node(T), writer: *std.Io.Writer) !void {
+        pub fn writeString(self: Node(T), writer: *std.Io.Writer) anyerror!void {
             return switch (self.val) {
                 inline else => |node| node.writeString(writer),
             };
@@ -51,6 +60,10 @@ pub const Program = struct {
     statements: []Node(.Statement) = undefined,
 
     pub fn deinit(self: *Program, alloc: std.mem.Allocator) void {
+        for (self.statements) |stmt| {
+            stmt.deinit(alloc);
+        }
+
         alloc.free(self.statements);
     }
 
@@ -78,7 +91,7 @@ pub const Program = struct {
                             .token = Lexer.Token{ .token_type = Lexer.TokenType.IDENT, .literal = "myVar" },
                             .value = "myVar",
                         },
-                        .value = Node(.Expression){ .val = .{
+                        .value = &Node(.Expression){ .val = .{
                             .ident = Identifier{
                                 .token = Lexer.Token{ .token_type = Lexer.TokenType.IDENT, .literal = "anotherVar" },
                                 .value = "anotherVar",
@@ -99,10 +112,74 @@ pub const Program = struct {
     }
 };
 
+pub const ReturnStatement = struct {
+    token: Lexer.Token,
+    return_value: *const Node(.Expression),
+
+    pub fn init(alloc: std.mem.Allocator, tok: Lexer.Token, return_value: Node(.Expression)) !ReturnStatement {
+        const exp_ptr = try alloc.create(Node(.Expression));
+        exp_ptr.* = return_value;
+
+        return .{ .token = tok, .return_value = exp_ptr };
+    }
+
+    pub fn deinit(self: ReturnStatement, alloc: std.mem.Allocator) void {
+        self.return_value.deinit(alloc);
+        alloc.destroy(self.return_value);
+    }
+
+    pub fn tokenLiteral(self: ReturnStatement) []const u8 {
+        return self.token.literal;
+    }
+
+    pub fn writeString(self: ReturnStatement, writer: *std.Io.Writer) !void {
+        try writer.print("{s} ", .{self.tokenLiteral()});
+        try self.return_value.writeString(writer);
+        _ = try writer.write(";");
+    }
+};
+
+pub const ExpressionStatement = struct {
+    token: Lexer.Token,
+    expression: *const Node(.Expression),
+
+    pub fn init(alloc: std.mem.Allocator, tok: Lexer.Token, exp: Node(.Expression)) !ExpressionStatement {
+        const exp_ptr = try alloc.create(Node(.Expression));
+        exp_ptr.* = exp;
+
+        return .{ .token = tok, .expression = exp_ptr };
+    }
+
+    pub fn deinit(self: ExpressionStatement, alloc: std.mem.Allocator) void {
+        self.expression.deinit(alloc);
+        alloc.destroy(self.expression);
+    }
+
+    pub fn tokenLiteral(self: ExpressionStatement) []const u8 {
+        return self.token.literal;
+    }
+
+    pub fn writeString(self: ExpressionStatement, writer: *std.Io.Writer) !void {
+        try self.expression.writeString(writer);
+    }
+};
+
 pub const LetStatement = struct {
     token: Lexer.Token,
-    name: Identifier = undefined,
-    value: Node(.Expression) = undefined,
+    name: Identifier,
+    value: *const Node(.Expression),
+
+    pub fn init(alloc: std.mem.Allocator, tok: Lexer.Token, name: Identifier, exp: Node(.Expression)) !LetStatement {
+        const exp_ptr = try alloc.create(Node(.Expression));
+        exp_ptr.* = exp;
+
+        return .{ .token = tok, .name = name, .value = exp_ptr };
+    }
+
+    pub fn deinit(self: LetStatement, alloc: std.mem.Allocator) void {
+        self.value.deinit(alloc);
+        alloc.destroy(self.value);
+    }
 
     pub fn tokenLiteral(self: LetStatement) []const u8 {
         return self.token.literal;
@@ -121,6 +198,8 @@ pub const Identifier = struct {
     token: Lexer.Token,
     value: []const u8,
 
+    pub fn deinit(_: Identifier, _: std.mem.Allocator) void {}
+
     pub fn tokenLiteral(self: Identifier) []const u8 {
         return self.token.literal;
     }
@@ -134,6 +213,8 @@ pub const IntegerLiteral = struct {
     token: Lexer.Token,
     value: i64,
 
+    pub fn deinit(_: IntegerLiteral, _: std.mem.Allocator) void {}
+
     pub fn tokenLiteral(self: IntegerLiteral) []const u8 {
         return self.token.literal;
     }
@@ -143,31 +224,57 @@ pub const IntegerLiteral = struct {
     }
 };
 
-pub const ReturnStatement = struct {
+pub const PrefixExpression = struct {
     token: Lexer.Token,
-    return_value: Node(.Expression) = undefined,
+    operator: []const u8,
+    right: *const Node(.Expression),
 
-    pub fn tokenLiteral(self: ReturnStatement) []const u8 {
+    pub fn init(alloc: std.mem.Allocator, tok: Lexer.Token, operator: []const u8, right: Node(.Expression)) !PrefixExpression {
+        const exp_ptr = try alloc.create(Node(.Expression));
+        exp_ptr.* = right;
+
+        return .{ .token = tok, .operator = operator, .right = exp_ptr };
+    }
+
+    pub fn deinit(self: PrefixExpression, alloc: std.mem.Allocator) void {
+        self.right.deinit(alloc);
+        alloc.destroy(self.right);
+    }
+
+    pub fn tokenLiteral(self: PrefixExpression) []const u8 {
         return self.token.literal;
     }
 
-    pub fn writeString(self: ReturnStatement, writer: *std.Io.Writer) !void {
-        try writer.print("{s} ", .{self.tokenLiteral()});
-        try self.return_value.writeString(writer);
-        _ = try writer.write(";");
+    pub fn writeString(self: PrefixExpression, writer: *std.Io.Writer) !void {
+        _ = try writer.write("(");
+        _ = try writer.write(self.operator);
+        try self.right.writeString(writer);
+        _ = try writer.write(")");
     }
 };
 
-pub const ExpressionStatement = struct {
-    token: Lexer.Token,
-    expression: Node(.Expression) = undefined,
+pub fn debugPrintNode(node: anytype) !void {
+    var buf: [1024]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&buf);
+    var writer = &stdout_writer.interface;
+    try node.writeString(writer);
+    try writer.flush();
+}
 
-    pub fn tokenLiteral(self: ExpressionStatement) []const u8 {
-        return self.token.literal;
+// TODO for testing purposes, delete later
+pub const NoopExpression = struct {
+    pub fn deinit(self: NoopExpression, _: std.mem.Allocator) void {
+        _ = self;
     }
 
-    pub fn writeString(self: ExpressionStatement, writer: *std.Io.Writer) !void {
-        try self.expression.writeString(writer);
+    pub fn tokenLiteral(self: NoopExpression) []const u8 {
+        _ = self;
+        return "noop";
+    }
+
+    pub fn writeString(self: NoopExpression, writer: *std.Io.Writer) !void {
+        _ = self;
+        _ = try writer.write("noop");
     }
 };
 
