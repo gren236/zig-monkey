@@ -16,6 +16,7 @@ inline fn getPrefixParseFnFromNodeType(token_type: Lexer.TokenType) !PrefixParse
         .INT => parseIntegerLiteral,
         .TRUE, .FALSE => parseBoolean,
         .BANG, .MINUS => parsePrefixExpression,
+        .LPAREN => parseGroupedExpression,
         else => error.UnrecognisedTokenType,
     };
 }
@@ -238,6 +239,16 @@ fn parseInfixExpression(self: *@This(), alloc: std.mem.Allocator, left: ast.Node
             try self.parseExpression(alloc, prec),
         ),
     } };
+}
+
+fn parseGroupedExpression(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expression) {
+    self.nextToken();
+
+    const exp = try self.parseExpression(alloc, .lowest);
+
+    if (!try self.expectPeek(alloc, .RPAREN)) return undefined;
+
+    return exp;
 }
 
 fn expectPeek(self: *@This(), alloc: std.mem.Allocator, t: Lexer.TokenType) !bool {
@@ -543,6 +554,26 @@ test "operator precedence" {
         .{
             .input = "3 < 5 == true",
             .expected = "((3 < 5) == true)",
+        },
+        .{
+            .input = "1 + (2 + 3) + 4",
+            .expected = "((1 + (2 + 3)) + 4)",
+        },
+        .{
+            .input = "(5 + 5) * 2",
+            .expected = "((5 + 5) * 2)",
+        },
+        .{
+            .input = "2 / (5 + 5)",
+            .expected = "(2 / (5 + 5))",
+        },
+        .{
+            .input = "-(5 + 5)",
+            .expected = "(-(5 + 5))",
+        },
+        .{
+            .input = "!(true == true)",
+            .expected = "(!(true == true))",
         },
     };
 
