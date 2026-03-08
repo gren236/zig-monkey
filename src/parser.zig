@@ -17,6 +17,7 @@ inline fn getPrefixParseFnFromNodeType(token_type: Lexer.TokenType) !PrefixParse
         .TRUE, .FALSE => parseBoolean,
         .BANG, .MINUS => parsePrefixExpression,
         .LPAREN => parseGroupedExpression,
+        .IF => parseIfExpression,
         else => error.UnrecognisedTokenType,
     };
 }
@@ -127,15 +128,44 @@ fn parseLetStatement(self: *@This(), alloc: std.mem.Allocator) !?ast.Node(.State
 }
 
 fn parseExpressionStatement(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Statement) {
+    var exp = try self.parseExpression(alloc, .lowest);
+    errdefer exp.deinit(alloc);
+
     const stmt = try ast.ExpressionStatement.init(
         alloc,
         self.cur_token,
-        try self.parseExpression(alloc, .lowest),
+        exp,
     );
 
     if (self.peek_token.token_type == .SEMICOLON) self.nextToken();
 
     return ast.Node(.Statement){ .val = .{ .expression_stmt = stmt } };
+}
+
+fn parseBlockStatement(self: *@This(), alloc: std.mem.Allocator) !ast.BlockStatement {
+    var block = ast.BlockStatement{ .token = self.cur_token };
+    var stmts = std.ArrayList(ast.Node(.Statement)).empty;
+    errdefer {
+        for (stmts.items) |stmt| {
+            stmt.deinit(alloc);
+        }
+        stmts.deinit(alloc);
+    }
+
+    self.nextToken();
+
+    while (self.cur_token.token_type != .RBRACE and self.cur_token.token_type != .EOF) {
+        const stmt_opt = try self.parseStatement(alloc);
+        if (stmt_opt) |stmt| {
+            errdefer stmt.deinit(alloc);
+            try stmts.append(alloc, stmt);
+        }
+        self.nextToken();
+    }
+
+    block.statements = try stmts.toOwnedSlice(alloc);
+
+    return block;
 }
 
 // Expression parsing methods
@@ -173,6 +203,7 @@ fn parseExpression(self: *@This(), alloc: std.mem.Allocator, prec: Precedence) !
     const prefix = try getPrefixParseFnFromNodeType(self.cur_token.token_type);
 
     var left_exp = try prefix(self, alloc);
+    errdefer left_exp.deinit(alloc);
 
     while (self.peek_token.token_type != .SEMICOLON and @intFromEnum(prec) < @intFromEnum(self.peekPrecedence())) {
         const inflix = getInfixParseFnFromNodeType(self.peek_token.token_type) catch {
@@ -182,6 +213,7 @@ fn parseExpression(self: *@This(), alloc: std.mem.Allocator, prec: Precedence) !
         self.nextToken();
 
         left_exp = try inflix(self, alloc, left_exp);
+        errdefer left_exp.deinit(alloc);
     }
 
     return left_exp;
@@ -245,10 +277,47 @@ fn parseGroupedExpression(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.E
     self.nextToken();
 
     const exp = try self.parseExpression(alloc, .lowest);
+    errdefer exp.deinit(alloc);
 
     if (!try self.expectPeek(alloc, .RPAREN)) return undefined;
 
     return exp;
+}
+
+fn parseIfExpression(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expression) {
+    const if_tok = self.cur_token;
+
+    if (!try self.expectPeek(alloc, .LPAREN)) return undefined;
+
+    self.nextToken();
+
+    const exp_condition = try self.parseExpression(alloc, .lowest);
+    errdefer exp_condition.deinit(alloc);
+
+    if (!try self.expectPeek(alloc, .RPAREN)) return undefined;
+    if (!try self.expectPeek(alloc, .LBRACE)) return undefined;
+
+    const exp_consequence = try self.parseBlockStatement(alloc);
+    errdefer exp_consequence.deinit(alloc);
+
+    var alt: ?ast.BlockStatement = null;
+    if (self.peek_token.token_type == .ELSE) {
+        self.nextToken();
+
+        if (!try self.expectPeek(alloc, .LBRACE)) return undefined;
+
+        alt = try self.parseBlockStatement(alloc);
+    }
+
+    return ast.Node(.Expression){ .val = .{
+        .if_exp = try ast.IfExpression.init(
+            alloc,
+            if_tok,
+            exp_condition,
+            exp_consequence,
+            alt,
+        ),
+    } };
 }
 
 fn expectPeek(self: *@This(), alloc: std.mem.Allocator, t: Lexer.TokenType) !bool {
@@ -264,10 +333,18 @@ fn expectPeek(self: *@This(), alloc: std.mem.Allocator, t: Lexer.TokenType) !boo
 pub fn parseProgram(self: *@This(), alloc: std.mem.Allocator) !ast.Program {
     var program = ast.Program{};
     var stmts = std.ArrayList(ast.Node(.Statement)).empty;
+    errdefer {
+        for (stmts.items) |stmt| {
+            stmt.deinit(alloc);
+        }
+        stmts.deinit(alloc);
+    }
 
     while (self.cur_token.token_type != .EOF) {
-        const stmt = try self.parseStatement(alloc);
-        if (stmt != null) try stmts.append(alloc, stmt.?);
+        const stmt_opt = try self.parseStatement(alloc);
+        if (stmt_opt) |stmt| {
+            try stmts.append(alloc, stmt);
+        }
 
         self.nextToken();
     }
@@ -482,6 +559,64 @@ test "infix expressions" {
         try std.testing.expectEqualStrings(t.operator, exp.operator);
         try testIntegerLiteral(exp.right, t.right_value);
     }
+}
+
+test "if expression" {
+    const input = "if (x < y) { x }";
+
+    const alloc = std.testing.allocator;
+
+    var l = Lexer.init(input);
+    var p = init(&l);
+    defer p.deinit(alloc);
+
+    var program = try p.parseProgram(alloc);
+    defer program.deinit(alloc);
+
+    try checkParserErrors(&p);
+    try std.testing.expectEqual(1, program.statements.len);
+
+    const if_exp = program.statements[0].val.expression_stmt.expression.val.if_exp;
+    const cond_infix = if_exp.condition.val.infix;
+    try std.testing.expectEqualStrings("x", cond_infix.left.tokenLiteral());
+    try std.testing.expectEqualStrings("<", cond_infix.operator);
+    try std.testing.expectEqualStrings("y", cond_infix.right.tokenLiteral());
+
+    try std.testing.expectEqual(1, if_exp.consequence.statements.len);
+    const conseq_exp = if_exp.consequence.statements[0].val.expression_stmt.expression;
+    try std.testing.expectEqualStrings("x", conseq_exp.val.ident.value);
+
+    try std.testing.expectEqual(null, if_exp.alternative);
+}
+
+test "if-else expression" {
+    const input = "if (x < y) { x } else { y }";
+
+    const alloc = std.testing.allocator;
+
+    var l = Lexer.init(input);
+    var p = init(&l);
+    defer p.deinit(alloc);
+
+    var program = try p.parseProgram(alloc);
+    defer program.deinit(alloc);
+
+    try checkParserErrors(&p);
+    try std.testing.expectEqual(1, program.statements.len);
+
+    const if_exp = program.statements[0].val.expression_stmt.expression.val.if_exp;
+    const cond_infix = if_exp.condition.val.infix;
+    try std.testing.expectEqualStrings("x", cond_infix.left.tokenLiteral());
+    try std.testing.expectEqualStrings("<", cond_infix.operator);
+    try std.testing.expectEqualStrings("y", cond_infix.right.tokenLiteral());
+
+    try std.testing.expectEqual(1, if_exp.consequence.statements.len);
+    const conseq_exp = if_exp.consequence.statements[0].val.expression_stmt.expression;
+    try std.testing.expectEqualStrings("x", conseq_exp.val.ident.value);
+
+    try std.testing.expect(if_exp.alternative != null);
+    const alt_exp = if_exp.alternative.?.statements[0].val.expression_stmt.expression;
+    try std.testing.expectEqualStrings("y", alt_exp.val.ident.value);
 }
 
 test "operator precedence" {

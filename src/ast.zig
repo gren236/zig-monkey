@@ -24,6 +24,7 @@ pub const ExpressionNode = union(enum) {
     boolean: Boolean,
     prefix: PrefixExpression,
     infix: InfixExpression,
+    if_exp: IfExpression,
 
     noop: NoopExpression,
 };
@@ -196,6 +197,29 @@ pub const LetStatement = struct {
     }
 };
 
+pub const BlockStatement = struct {
+    token: Lexer.Token,
+    statements: []Node(.Statement) = undefined,
+
+    pub fn deinit(self: BlockStatement, alloc: std.mem.Allocator) void {
+        for (self.statements) |stmt| {
+            stmt.deinit(alloc);
+        }
+
+        alloc.free(self.statements);
+    }
+
+    pub fn tokenLiteral(self: BlockStatement) []const u8 {
+        return self.token.literal;
+    }
+
+    pub fn writeString(self: BlockStatement, writer: *std.Io.Writer) !void {
+        for (self.statements) |stmt| {
+            try stmt.writeString(writer);
+        }
+    }
+};
+
 pub const Identifier = struct {
     token: Lexer.Token,
     value: []const u8,
@@ -308,6 +332,62 @@ pub const InfixExpression = struct {
         try writer.print(" {s} ", .{self.operator});
         try self.right.writeString(writer);
         _ = try writer.write(")");
+    }
+};
+
+pub const IfExpression = struct {
+    token: Lexer.Token,
+    condition: *const Node(.Expression),
+    consequence: *const BlockStatement,
+    alternative: ?*const BlockStatement = null,
+
+    pub fn init(alloc: std.mem.Allocator, tok: Lexer.Token, condition: Node(.Expression), cons: BlockStatement, alt: ?BlockStatement) !IfExpression {
+        const cond_ptr = try alloc.create(Node(.Expression));
+        cond_ptr.* = condition;
+
+        const cons_ptr = try alloc.create(BlockStatement);
+        cons_ptr.* = cons;
+
+        var exp = IfExpression{
+            .token = tok,
+            .condition = cond_ptr,
+            .consequence = cons_ptr,
+        };
+
+        if (alt) |alt_val| {
+            const alt_ptr = try alloc.create(BlockStatement);
+            alt_ptr.* = alt_val;
+            exp.alternative = alt_ptr;
+        }
+
+        return exp;
+    }
+
+    pub fn deinit(self: IfExpression, alloc: std.mem.Allocator) void {
+        self.condition.deinit(alloc);
+        alloc.destroy(self.condition);
+        self.consequence.deinit(alloc);
+        alloc.destroy(self.consequence);
+        if (self.alternative) |alt| {
+            alt.deinit(alloc);
+            alloc.destroy(alt);
+        }
+    }
+
+    pub fn tokenLiteral(self: IfExpression) []const u8 {
+        return self.token.literal;
+    }
+
+    pub fn writeString(self: IfExpression, writer: *std.Io.Writer) !void {
+        _ = try writer.write("if");
+        try self.condition.writeString(writer);
+        _ = try writer.write(" ");
+        try self.consequence.writeString(writer);
+
+        if (self.alternative != null) {
+            _ = try writer.write("else ");
+            try self.alternative.?.writeString(writer);
+        }
     }
 };
 
