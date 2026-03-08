@@ -21,6 +21,7 @@ pub const StatementNode = union(enum) {
 pub const ExpressionNode = union(enum) {
     ident: Identifier,
     int_literal: IntegerLiteral,
+    boolean: Boolean,
     prefix: PrefixExpression,
     infix: InfixExpression,
 
@@ -221,6 +222,21 @@ pub const IntegerLiteral = struct {
     }
 
     pub fn writeString(self: IntegerLiteral, writer: *std.Io.Writer) !void {
+        _ = try writer.write(self.token.literal);
+    }
+};
+
+pub const Boolean = struct {
+    token: Lexer.Token,
+    value: bool,
+
+    pub fn deinit(_: Boolean, _: std.mem.Allocator) void {}
+
+    pub fn tokenLiteral(self: Boolean) []const u8 {
+        return self.token.literal;
+    }
+
+    pub fn writeString(self: Boolean, writer: *std.Io.Writer) !void {
         _ = try writer.write(self.token.literal);
     }
 };

@@ -14,6 +14,7 @@ inline fn getPrefixParseFnFromNodeType(token_type: Lexer.TokenType) !PrefixParse
     return switch (token_type) {
         .IDENT => parseIdentifier,
         .INT => parseIntegerLiteral,
+        .TRUE, .FALSE => parseBoolean,
         .BANG, .MINUS => parsePrefixExpression,
         else => error.UnrecognisedTokenType,
     };
@@ -199,6 +200,12 @@ fn parseIntegerLiteral(self: *@This(), _: std.mem.Allocator) !ast.Node(.Expressi
     } };
 }
 
+fn parseBoolean(self: *@This(), _: std.mem.Allocator) !ast.Node(.Expression) {
+    return ast.Node(.Expression){ .val = .{
+        .boolean = .{ .token = self.cur_token, .value = self.cur_token.token_type == .TRUE },
+    } };
+}
+
 fn parsePrefixExpression(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expression) {
     const prefix_tok = self.cur_token;
     const prefix_op = self.cur_token.literal;
@@ -380,6 +387,26 @@ test "integer expression" {
     try testIntegerLiteral(program.statements[0].val.expression_stmt.expression, 5);
 }
 
+test "boolean expression" {
+    const input = "true;";
+
+    const alloc = std.testing.allocator;
+
+    var l = Lexer.init(input);
+    var p = init(&l);
+    defer p.deinit(alloc);
+
+    var program = try p.parseProgram(alloc);
+    defer program.deinit(alloc);
+
+    try checkParserErrors(&p);
+    try std.testing.expectEqual(1, program.statements.len);
+
+    var boolean = program.statements[0].val.expression_stmt.expression.val.boolean;
+    try std.testing.expectEqual(true, boolean.value);
+    try std.testing.expectEqualStrings("true", boolean.tokenLiteral());
+}
+
 test "prefix expressions" {
     const alloc = std.testing.allocator;
 
@@ -500,6 +527,22 @@ test "operator precedence" {
         .{
             .input = "3 + 4 * 5 == 3 * 1 + 4 * 5",
             .expected = "((3 + (4 * 5)) == ((3 * 1) + (4 * 5)))",
+        },
+        .{
+            .input = "true",
+            .expected = "true",
+        },
+        .{
+            .input = "false",
+            .expected = "false",
+        },
+        .{
+            .input = "3 > 5 == false",
+            .expected = "((3 > 5) == false)",
+        },
+        .{
+            .input = "3 < 5 == true",
+            .expected = "((3 < 5) == true)",
         },
     };
 
