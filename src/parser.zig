@@ -80,7 +80,7 @@ fn nextToken(self: *@This()) void {
 
 // Statement parsing methods
 
-fn parseStatement(self: *@This(), alloc: std.mem.Allocator) !?ast.Node(.Statement) {
+fn parseStatement(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Statement) {
     return switch (self.cur_token.token_type) {
         .LET => try self.parseLetStatement(alloc),
         .RETURN => try self.parseReturnStatement(alloc),
@@ -89,41 +89,41 @@ fn parseStatement(self: *@This(), alloc: std.mem.Allocator) !?ast.Node(.Statemen
 }
 
 fn parseReturnStatement(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Statement) {
-    const stmt = try ast.ReturnStatement.init(
-        alloc,
-        self.cur_token,
-        ast.Node(.Expression){ .val = .{ .noop = ast.NoopExpression{} } },
-    );
+    const return_tok = self.cur_token;
 
     self.nextToken();
 
-    // TODO: We're skipping the expressions until we encounter a semicolon
-    while (self.cur_token.token_type != Lexer.TokenType.SEMICOLON) {
-        self.nextToken();
-    }
+    const return_val = try self.parseExpression(alloc, .lowest);
 
-    return ast.Node(.Statement){ .val = .{ .return_stmt = stmt } };
+    if (self.peek_token.token_type == .SEMICOLON) self.nextToken();
+
+    return ast.Node(.Statement){ .val = .{ .return_stmt = try ast.ReturnStatement.init(
+        alloc,
+        return_tok,
+        return_val,
+    ) } };
 }
 
-fn parseLetStatement(self: *@This(), alloc: std.mem.Allocator) !?ast.Node(.Statement) {
+fn parseLetStatement(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Statement) {
     const let_tok = self.cur_token;
 
-    if (!try self.expectPeek(alloc, Lexer.TokenType.IDENT)) return null;
+    if (!try self.expectPeek(alloc, Lexer.TokenType.IDENT)) return error.ParseError;
 
     const stmt_name = ast.Identifier{ .token = self.cur_token, .value = self.cur_token.literal };
 
-    if (!try self.expectPeek(alloc, Lexer.TokenType.ASSIGN)) return null;
+    if (!try self.expectPeek(alloc, Lexer.TokenType.ASSIGN)) return error.ParseError;
 
-    // TODO: We're skipping the expressions until we encounter a semicolon
-    while (self.cur_token.token_type != Lexer.TokenType.SEMICOLON) {
-        self.nextToken();
-    }
+    self.nextToken();
+
+    const stmt_value = try self.parseExpression(alloc, .lowest);
+
+    if (self.peek_token.token_type == .SEMICOLON) self.nextToken();
 
     const stmt = try ast.LetStatement.init(
         alloc,
         let_tok,
         stmt_name,
-        ast.Node(.Expression){ .val = .{ .noop = ast.NoopExpression{} } },
+        stmt_value,
     );
 
     return ast.Node(.Statement){ .val = .{ .let_stmt = stmt } };
@@ -157,11 +157,11 @@ fn parseBlockStatement(self: *@This(), alloc: std.mem.Allocator) !ast.BlockState
     self.nextToken();
 
     while (self.cur_token.token_type != .RBRACE and self.cur_token.token_type != .EOF) {
-        const stmt_opt = try self.parseStatement(alloc);
-        if (stmt_opt) |stmt| {
-            errdefer stmt.deinit(alloc);
-            try stmts.append(alloc, stmt);
-        }
+        const stmt = try self.parseStatement(alloc);
+        errdefer stmt.deinit(alloc);
+
+        try stmts.append(alloc, stmt);
+
         self.nextToken();
     }
 
@@ -440,15 +440,14 @@ pub fn parseProgram(self: *@This(), alloc: std.mem.Allocator) !ast.Program {
     while (self.cur_token.token_type != .EOF) {
         defer self.nextToken();
 
-        const stmt_opt = self.parseStatement(alloc) catch |err| {
+        const stmt = self.parseStatement(alloc) catch |err| {
             switch (err) {
                 error.ParseError => continue,
                 else => return err,
             }
         };
-        if (stmt_opt) |stmt| {
-            try stmts.append(alloc, stmt);
-        }
+
+        try stmts.append(alloc, stmt);
     }
 
     program.statements = try stmts.toOwnedSlice(alloc);
@@ -469,65 +468,69 @@ fn checkParserErrors(p: *@This()) !void {
 }
 
 test "let statements" {
-    const input =
-        \\ let x = 5;
-        \\ let y = 10;
-        \\ let foobar = 838383;
-    ;
-
     const alloc = std.testing.allocator;
 
-    var l = Lexer.init(input);
-    var p = init(&l);
-    defer p.deinit(alloc);
-
-    var program = try p.parseProgram(alloc);
-    defer program.deinit(alloc);
-
-    try checkParserErrors(&p);
-    try std.testing.expectEqual(3, program.statements.len);
-
     const tests = [_]struct {
+        input: []const u8,
         expectedIdentifier: []const u8,
+        expectedValue: []const u8,
     }{
-        .{ .expectedIdentifier = "x" },
-        .{ .expectedIdentifier = "y" },
-        .{ .expectedIdentifier = "foobar" },
+        .{ .input = "let x = 5;", .expectedIdentifier = "x", .expectedValue = "5" },
+        .{ .input = "let y = true;", .expectedIdentifier = "y", .expectedValue = "true" },
+        .{ .input = "let foobar = y;", .expectedIdentifier = "foobar", .expectedValue = "y" },
     };
 
-    for (0.., tests) |i, t| {
-        const stmt = program.statements[i];
+    for (tests) |t| {
+        var l = Lexer.init(t.input);
+        var p = init(&l);
+        defer p.deinit(alloc);
+
+        var program = try p.parseProgram(alloc);
+        defer program.deinit(alloc);
+
+        try checkParserErrors(&p);
+        try std.testing.expectEqual(1, program.statements.len);
+
+        const stmt = program.statements[0];
 
         try std.testing.expectEqualStrings("let", stmt.tokenLiteral());
 
         var let_stmt = stmt.val.let_stmt;
         try std.testing.expectEqualStrings(t.expectedIdentifier, let_stmt.name.value);
         try std.testing.expectEqualStrings(t.expectedIdentifier, let_stmt.name.tokenLiteral());
+        try std.testing.expectEqualStrings(t.expectedValue, let_stmt.value.tokenLiteral());
     }
 }
 
 test "return statements" {
-    const input =
-        \\ return 5;
-        \\ return 10;
-        \\ return 838383;
-    ;
-
     const alloc = std.testing.allocator;
 
-    var l = Lexer.init(input);
-    var p = init(&l);
-    defer p.deinit(alloc);
+    const tests = [_]struct {
+        input: []const u8,
+        expectedValue: []const u8,
+    }{
+        .{ .input = "return 5;", .expectedValue = "5" },
+        .{ .input = "return true;", .expectedValue = "true" },
+        .{ .input = "return y;", .expectedValue = "y" },
+    };
 
-    var program = try p.parseProgram(alloc);
-    defer program.deinit(alloc);
+    for (tests) |t| {
+        var l = Lexer.init(t.input);
+        var p = init(&l);
+        defer p.deinit(alloc);
 
-    try checkParserErrors(&p);
-    try std.testing.expectEqual(3, program.statements.len);
+        var program = try p.parseProgram(alloc);
+        defer program.deinit(alloc);
 
-    for (program.statements) |stmt| {
+        try checkParserErrors(&p);
+        try std.testing.expectEqual(1, program.statements.len);
+
+        const stmt = program.statements[0];
+
+        try std.testing.expectEqualStrings("return", stmt.tokenLiteral());
+
         var return_stmt = stmt.val.return_stmt;
-        try std.testing.expectEqualStrings("return", return_stmt.tokenLiteral());
+        try std.testing.expectEqualStrings(t.expectedValue, return_stmt.return_value.tokenLiteral());
     }
 }
 
