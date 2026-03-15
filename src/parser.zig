@@ -18,6 +18,7 @@ inline fn getPrefixParseFnFromNodeType(token_type: Lexer.TokenType) !PrefixParse
         .BANG, .MINUS => parsePrefixExpression,
         .LPAREN => parseGroupedExpression,
         .IF => parseIfExpression,
+        .FUNCTION => parseFunctionLiteral,
         else => error.UnrecognisedTokenType,
     };
 }
@@ -320,6 +321,54 @@ fn parseIfExpression(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expres
     } };
 }
 
+fn parseFunctionLiteral(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expression) {
+    const lit_tok = self.cur_token;
+
+    if (!try self.expectPeek(alloc, .LPAREN)) return undefined;
+
+    const params = try self.parseFunctionParameters(alloc);
+    errdefer alloc.free(params);
+
+    if (!try self.expectPeek(alloc, .LBRACE)) return undefined;
+
+    const body = try self.parseBlockStatement(alloc);
+    errdefer body.deinit(alloc);
+
+    return ast.Node(.Expression){ .val = .{
+        .fn_literal = try ast.FunctionLiteral.init(
+            alloc,
+            lit_tok,
+            params,
+            body,
+        ),
+    } };
+}
+
+fn parseFunctionParameters(self: *@This(), alloc: std.mem.Allocator) ![]ast.Identifier {
+    var idents = std.ArrayList(ast.Identifier).empty;
+
+    if (self.peek_token.token_type == .RPAREN) {
+        self.nextToken();
+        return try idents.toOwnedSlice(alloc);
+    }
+
+    self.nextToken();
+
+    try idents.append(alloc, ast.Identifier{ .token = self.cur_token, .value = self.cur_token.literal });
+    errdefer idents.deinit(alloc);
+
+    while (self.peek_token.token_type == .COMMA) {
+        self.nextToken();
+        self.nextToken();
+
+        try idents.append(alloc, ast.Identifier{ .token = self.cur_token, .value = self.cur_token.literal });
+    }
+
+    if (!try self.expectPeek(alloc, .RPAREN)) return undefined;
+
+    return try idents.toOwnedSlice(alloc);
+}
+
 fn expectPeek(self: *@This(), alloc: std.mem.Allocator, t: Lexer.TokenType) !bool {
     if (self.peek_token.token_type != t) {
         try self.peekError(alloc, t);
@@ -617,6 +666,64 @@ test "if-else expression" {
     try std.testing.expect(if_exp.alternative != null);
     const alt_exp = if_exp.alternative.?.statements[0].val.expression_stmt.expression;
     try std.testing.expectEqualStrings("y", alt_exp.val.ident.value);
+}
+
+test "function literal expression" {
+    const input = "fn(x, y) { x + y; }";
+
+    const alloc = std.testing.allocator;
+
+    var l = Lexer.init(input);
+    var p = init(&l);
+    defer p.deinit(alloc);
+
+    var program = try p.parseProgram(alloc);
+    defer program.deinit(alloc);
+
+    try checkParserErrors(&p);
+    try std.testing.expectEqual(1, program.statements.len);
+
+    const fn_exp = program.statements[0].val.expression_stmt.expression.val.fn_literal;
+    try std.testing.expectEqual(2, fn_exp.parameters.len);
+    try std.testing.expectEqualStrings("x", fn_exp.parameters[0].value);
+    try std.testing.expectEqualStrings("y", fn_exp.parameters[1].value);
+
+    try std.testing.expectEqual(1, fn_exp.body.statements.len);
+    const body_infix = fn_exp.body.statements[0].val.expression_stmt.expression.val.infix;
+    try std.testing.expectEqualStrings("x", body_infix.left.tokenLiteral());
+    try std.testing.expectEqualStrings("+", body_infix.operator);
+    try std.testing.expectEqualStrings("y", body_infix.right.tokenLiteral());
+}
+
+test "function parameters" {
+    const alloc = std.testing.allocator;
+
+    const tests = [_]struct {
+        input: []const u8,
+        expectedParams: []const []const u8,
+    }{
+        .{ .input = "fn() {};", .expectedParams = &[_][]const u8{} },
+        .{ .input = "fn(x) {};", .expectedParams = &[_][]const u8{"x"} },
+        .{ .input = "fn(x, y, z) {};", .expectedParams = &[_][]const u8{ "x", "y", "z" } },
+    };
+
+    for (tests) |t| {
+        var l = Lexer.init(t.input);
+        var p = init(&l);
+        defer p.deinit(alloc);
+
+        var program = try p.parseProgram(alloc);
+        defer program.deinit(alloc);
+
+        try checkParserErrors(&p);
+        try std.testing.expectEqual(1, program.statements.len);
+
+        const func = program.statements[0].val.expression_stmt.expression.val.fn_literal;
+        try std.testing.expectEqual(t.expectedParams.len, func.parameters.len);
+        for (0.., t.expectedParams) |i, expectedParam| {
+            try std.testing.expectEqualStrings(expectedParam, func.parameters[i].value);
+        }
+    }
 }
 
 test "operator precedence" {

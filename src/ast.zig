@@ -25,6 +25,7 @@ pub const ExpressionNode = union(enum) {
     prefix: PrefixExpression,
     infix: InfixExpression,
     if_exp: IfExpression,
+    fn_literal: FunctionLiteral,
 
     noop: NoopExpression,
 };
@@ -388,6 +389,49 @@ pub const IfExpression = struct {
             _ = try writer.write("else ");
             try self.alternative.?.writeString(writer);
         }
+    }
+};
+
+pub const FunctionLiteral = struct {
+    token: Lexer.Token,
+    parameters: []Identifier,
+    body: *const BlockStatement,
+
+    pub fn init(alloc: std.mem.Allocator, tok: Lexer.Token, params: []Identifier, body: BlockStatement) !FunctionLiteral {
+        const block_ptr = try alloc.create(BlockStatement);
+        block_ptr.* = body;
+
+        return .{
+            .token = tok,
+            .parameters = params,
+            .body = block_ptr,
+        };
+    }
+
+    pub fn deinit(self: FunctionLiteral, alloc: std.mem.Allocator) void {
+        for (self.parameters) |param| {
+            param.deinit(alloc);
+        }
+        alloc.free(self.parameters);
+        self.body.deinit(alloc);
+        alloc.destroy(self.body);
+    }
+
+    pub fn tokenLiteral(self: FunctionLiteral) []const u8 {
+        return self.token.literal;
+    }
+
+    pub fn writeString(self: FunctionLiteral, writer: *std.Io.Writer) !void {
+        _ = try writer.write(self.tokenLiteral());
+        _ = try writer.write("(");
+
+        for (0.., self.parameters) |i, param| {
+            if (i != 0) _ = try writer.write(", ");
+            try param.writeString(writer);
+        }
+
+        _ = try writer.write(") ");
+        try self.body.writeString(writer);
     }
 };
 
