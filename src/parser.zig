@@ -201,7 +201,17 @@ fn curPrecedence(self: *@This()) Precedence {
 }
 
 fn parseExpression(self: *@This(), alloc: std.mem.Allocator, prec: Precedence) !ast.Node(.Expression) {
-    const prefix = try getPrefixParseFnFromNodeType(self.cur_token.token_type);
+    const prefix = getPrefixParseFnFromNodeType(self.cur_token.token_type) catch {
+        try self.errors.append(
+            alloc,
+            try std.fmt.allocPrint(
+                alloc,
+                "no prefix function is recognised for token {s}",
+                .{@tagName(self.cur_token.token_type)},
+            ),
+        );
+        return error.ParseError;
+    };
 
     var left_exp = try prefix(self, alloc);
     errdefer left_exp.deinit(alloc);
@@ -280,7 +290,7 @@ fn parseGroupedExpression(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.E
     const exp = try self.parseExpression(alloc, .lowest);
     errdefer exp.deinit(alloc);
 
-    if (!try self.expectPeek(alloc, .RPAREN)) return undefined;
+    if (!try self.expectPeek(alloc, .RPAREN)) return error.ParseError;
 
     return exp;
 }
@@ -288,15 +298,15 @@ fn parseGroupedExpression(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.E
 fn parseIfExpression(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expression) {
     const if_tok = self.cur_token;
 
-    if (!try self.expectPeek(alloc, .LPAREN)) return undefined;
+    if (!try self.expectPeek(alloc, .LPAREN)) return error.ParseError;
 
     self.nextToken();
 
     const exp_condition = try self.parseExpression(alloc, .lowest);
     errdefer exp_condition.deinit(alloc);
 
-    if (!try self.expectPeek(alloc, .RPAREN)) return undefined;
-    if (!try self.expectPeek(alloc, .LBRACE)) return undefined;
+    if (!try self.expectPeek(alloc, .RPAREN)) return error.ParseError;
+    if (!try self.expectPeek(alloc, .LBRACE)) return error.ParseError;
 
     const exp_consequence = try self.parseBlockStatement(alloc);
     errdefer exp_consequence.deinit(alloc);
@@ -305,7 +315,7 @@ fn parseIfExpression(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expres
     if (self.peek_token.token_type == .ELSE) {
         self.nextToken();
 
-        if (!try self.expectPeek(alloc, .LBRACE)) return undefined;
+        if (!try self.expectPeek(alloc, .LBRACE)) return error.ParseError;
 
         alt = try self.parseBlockStatement(alloc);
     }
@@ -324,12 +334,12 @@ fn parseIfExpression(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expres
 fn parseFunctionLiteral(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expression) {
     const lit_tok = self.cur_token;
 
-    if (!try self.expectPeek(alloc, .LPAREN)) return undefined;
+    if (!try self.expectPeek(alloc, .LPAREN)) return error.ParseError;
 
     const params = try self.parseFunctionParameters(alloc);
     errdefer alloc.free(params);
 
-    if (!try self.expectPeek(alloc, .LBRACE)) return undefined;
+    if (!try self.expectPeek(alloc, .LBRACE)) return error.ParseError;
 
     const body = try self.parseBlockStatement(alloc);
     errdefer body.deinit(alloc);
@@ -364,7 +374,7 @@ fn parseFunctionParameters(self: *@This(), alloc: std.mem.Allocator) ![]ast.Iden
         try idents.append(alloc, ast.Identifier{ .token = self.cur_token, .value = self.cur_token.literal });
     }
 
-    if (!try self.expectPeek(alloc, .RPAREN)) return undefined;
+    if (!try self.expectPeek(alloc, .RPAREN)) return error.ParseError;
 
     return try idents.toOwnedSlice(alloc);
 }
@@ -390,12 +400,17 @@ pub fn parseProgram(self: *@This(), alloc: std.mem.Allocator) !ast.Program {
     }
 
     while (self.cur_token.token_type != .EOF) {
-        const stmt_opt = try self.parseStatement(alloc);
+        defer self.nextToken();
+
+        const stmt_opt = self.parseStatement(alloc) catch |err| {
+            switch (err) {
+                error.ParseError => continue,
+                else => return err,
+            }
+        };
         if (stmt_opt) |stmt| {
             try stmts.append(alloc, stmt);
         }
-
-        self.nextToken();
     }
 
     program.statements = try stmts.toOwnedSlice(alloc);
