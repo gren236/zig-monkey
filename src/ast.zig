@@ -27,8 +27,6 @@ pub const ExpressionNode = union(enum) {
     if_exp: IfExpression,
     fn_literal: FunctionLiteral,
     call_exp: CallExpression,
-
-    noop: NoopExpression,
 };
 
 pub fn Node(comptime T: NodeType) type {
@@ -485,23 +483,6 @@ pub fn debugPrintNode(node: anytype) !void {
     try node.writeString(writer);
     try writer.flush();
 }
-
-// TODO for testing purposes, delete later
-pub const NoopExpression = struct {
-    pub fn deinit(self: NoopExpression, _: std.mem.Allocator) void {
-        _ = self;
-    }
-
-    pub fn tokenLiteral(self: NoopExpression) []const u8 {
-        _ = self;
-        return "noop";
-    }
-
-    pub fn writeString(self: NoopExpression, writer: *std.Io.Writer) !void {
-        _ = self;
-        _ = try writer.write("noop");
-    }
-};
 
 test {
     std.testing.refAllDecls(@This());
