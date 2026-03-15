@@ -26,6 +26,7 @@ inline fn getPrefixParseFnFromNodeType(token_type: Lexer.TokenType) !PrefixParse
 inline fn getInfixParseFnFromNodeType(token_type: Lexer.TokenType) !InfixParseFn {
     return switch (token_type) {
         .PLUS, .MINUS, .SLASH, .ASTERISK, .EQ, .NOT_EQ, .LT, .GT => parseInfixExpression,
+        .LPAREN => parseCallExpression,
         else => error.UnrecognisedTokenType,
     };
 }
@@ -188,6 +189,7 @@ inline fn getPrecedenceByTokenType(tok_type: Lexer.TokenType) Precedence {
         .LT, .GT => .lessgreater,
         .PLUS, .MINUS => .sum,
         .SLASH, .ASTERISK => .product,
+        .LPAREN => .call,
         else => .lowest,
     };
 }
@@ -282,6 +284,42 @@ fn parseInfixExpression(self: *@This(), alloc: std.mem.Allocator, left: ast.Node
             try self.parseExpression(alloc, prec),
         ),
     } };
+}
+
+fn parseCallExpression(self: *@This(), alloc: std.mem.Allocator, function: ast.Node(.Expression)) !ast.Node(.Expression) {
+    return ast.Node(.Expression){ .val = .{
+        .call_exp = try ast.CallExpression.init(
+            alloc,
+            self.cur_token,
+            function,
+            try self.parseCallArguments(alloc),
+        ),
+    } };
+}
+
+fn parseCallArguments(self: *@This(), alloc: std.mem.Allocator) ![]ast.Node(.Expression) {
+    var args = std.ArrayList(ast.Node(.Expression)).empty;
+
+    if (self.peek_token.token_type == .RPAREN) {
+        self.nextToken();
+        return try args.toOwnedSlice(alloc);
+    }
+
+    self.nextToken();
+
+    try args.append(alloc, try self.parseExpression(alloc, .lowest));
+    errdefer args.deinit(alloc);
+
+    while (self.peek_token.token_type == .COMMA) {
+        self.nextToken();
+        self.nextToken();
+
+        try args.append(alloc, try self.parseExpression(alloc, .lowest));
+    }
+
+    if (!try self.expectPeek(alloc, .RPAREN)) return error.ParseError;
+
+    return try args.toOwnedSlice(alloc);
 }
 
 fn parseGroupedExpression(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expression) {
@@ -741,6 +779,38 @@ test "function parameters" {
     }
 }
 
+test "call expression" {
+    const input = "add(1, 2 * 3, 4 + 5);";
+
+    const alloc = std.testing.allocator;
+
+    var l = Lexer.init(input);
+    var p = init(&l);
+    defer p.deinit(alloc);
+
+    var program = try p.parseProgram(alloc);
+    defer program.deinit(alloc);
+
+    try checkParserErrors(&p);
+    try std.testing.expectEqual(1, program.statements.len);
+
+    const call_exp = program.statements[0].val.expression_stmt.expression.val.call_exp;
+    try std.testing.expectEqualStrings("add", call_exp.function.val.ident.tokenLiteral());
+
+    try std.testing.expectEqual(3, call_exp.arguments.len);
+    try testIntegerLiteral(&call_exp.arguments[0], 1);
+
+    const arg2_infix = call_exp.arguments[1].val.infix;
+    try std.testing.expectEqualStrings("2", arg2_infix.left.tokenLiteral());
+    try std.testing.expectEqualStrings("*", arg2_infix.operator);
+    try std.testing.expectEqualStrings("3", arg2_infix.right.tokenLiteral());
+
+    const arg3_infix = call_exp.arguments[2].val.infix;
+    try std.testing.expectEqualStrings("4", arg3_infix.left.tokenLiteral());
+    try std.testing.expectEqualStrings("+", arg3_infix.operator);
+    try std.testing.expectEqualStrings("5", arg3_infix.right.tokenLiteral());
+}
+
 test "operator precedence" {
     const alloc = std.testing.allocator;
 
@@ -831,6 +901,18 @@ test "operator precedence" {
         .{
             .input = "!(true == true)",
             .expected = "(!(true == true))",
+        },
+        .{
+            .input = "a + add(b * c) + d",
+            .expected = "((a + add((b * c))) + d)",
+        },
+        .{
+            .input = "add(a, b, 1, 2 * 3, 4 + 5, add(6, 7 * 8))",
+            .expected = "add(a, b, 1, (2 * 3), (4 + 5), add(6, (7 * 8)))",
+        },
+        .{
+            .input = "add(a + b + c * d / f + g)",
+            .expected = "add((((a + b) + ((c * d) / f)) + g))",
         },
     };
 
