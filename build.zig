@@ -89,8 +89,10 @@ pub fn build(b: *std.Build) void {
     // root module. Note that test executables only test one module at a time,
     // hence why we have to create two separate ones.
     const exe_tests = b.addTest(.{
+        .name = "zig_monkey_test",
         .root_module = exe.root_module,
     });
+    b.installArtifact(exe_tests);
 
     // A run step that will run the second test executable.
     const run_exe_tests = b.addRunArtifact(exe_tests);

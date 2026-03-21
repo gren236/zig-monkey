@@ -145,7 +145,6 @@ fn parseExpressionStatement(self: *@This(), alloc: std.mem.Allocator) !ast.Node(
 }
 
 fn parseBlockStatement(self: *@This(), alloc: std.mem.Allocator) !ast.BlockStatement {
-    var block = ast.BlockStatement{ .token = self.cur_token };
     var stmts = std.ArrayList(ast.Node(.Statement)).empty;
     errdefer {
         for (stmts.items) |stmt| {
@@ -165,9 +164,7 @@ fn parseBlockStatement(self: *@This(), alloc: std.mem.Allocator) !ast.BlockState
         self.nextToken();
     }
 
-    block.statements = try stmts.toOwnedSlice(alloc);
-
-    return block;
+    return ast.BlockStatement{ .token = self.cur_token, .statements = try stmts.toOwnedSlice(alloc) };
 }
 
 // Expression parsing methods
@@ -428,7 +425,6 @@ fn expectPeek(self: *@This(), alloc: std.mem.Allocator, t: Lexer.TokenType) !boo
 }
 
 pub fn parseProgram(self: *@This(), alloc: std.mem.Allocator) !ast.Program {
-    var program = ast.Program{};
     var stmts = std.ArrayList(ast.Node(.Statement)).empty;
     errdefer {
         for (stmts.items) |stmt| {
@@ -450,8 +446,7 @@ pub fn parseProgram(self: *@This(), alloc: std.mem.Allocator) !ast.Program {
         try stmts.append(alloc, stmt);
     }
 
-    program.statements = try stmts.toOwnedSlice(alloc);
-    return program;
+    return ast.Program{ .statements = try stmts.toOwnedSlice(alloc) };
 }
 
 fn checkParserErrors(p: *@This()) !void {

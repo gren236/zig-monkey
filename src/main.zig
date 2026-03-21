@@ -1,6 +1,15 @@
 const std = @import("std");
 const repl = @import("repl.zig");
 
+// Ensure all modules are included in `zig build test`.
+comptime {
+    _ = @import("lexer.zig");
+    _ = @import("ast.zig");
+    _ = @import("parser.zig");
+    _ = @import("evaluator.zig");
+    _ = @import("object.zig");
+}
+
 pub fn main() !void {
     var out_buf: [1024]u8 = undefined;
     var in_buf: [1024]u8 = undefined;

@@ -60,7 +60,7 @@ pub fn Node(comptime T: NodeType) type {
 }
 
 pub const Program = struct {
-    statements: []Node(.Statement) = undefined,
+    statements: []Node(.Statement),
 
     pub fn deinit(self: *Program, alloc: std.mem.Allocator) void {
         for (self.statements) |stmt| {
@@ -199,7 +199,7 @@ pub const LetStatement = struct {
 
 pub const BlockStatement = struct {
     token: Lexer.Token,
-    statements: []Node(.Statement) = undefined,
+    statements: []Node(.Statement),
 
     pub fn deinit(self: BlockStatement, alloc: std.mem.Allocator) void {
         for (self.statements) |stmt| {
