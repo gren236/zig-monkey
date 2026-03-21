@@ -32,6 +32,11 @@ fn evalExpression(node: *const ast.Node(.Expression)) object.Object {
             const right = evalExpression(pref.right);
             return evalPrefixExpression(pref.operator, right);
         },
+        .infix => |inf| {
+            const left = evalExpression(inf.left);
+            const right = evalExpression(inf.right);
+            return evalInfixExpression(inf.operator, left, right);
+        },
         else => return nil_obj,
     }
 }
@@ -47,6 +52,9 @@ fn evalStatements(stmts: []ast.Node(.Statement)) object.Object {
 const Operator = enum {
     @"!",
     @"-",
+    @"+",
+    @"*",
+    @"/",
 };
 
 fn evalPrefixExpression(operator: []const u8, right: object.Object) object.Object {
@@ -54,6 +62,7 @@ fn evalPrefixExpression(operator: []const u8, right: object.Object) object.Objec
     switch (op) {
         .@"!" => return evalBangOperatorExpression(right),
         .@"-" => return evalMinusPrefixOperatorExpression(right),
+        else => return nil_obj,
     }
 }
 
@@ -72,6 +81,29 @@ fn evalMinusPrefixOperatorExpression(right: object.Object) object.Object {
     return object.Object{ .integer = .{ .value = -right.integer.value } };
 }
 
+fn evalInfixExpression(operator: []const u8, left: object.Object, right: object.Object) object.Object {
+    // check that the tag active for left/right object union is indeed .integer
+    if (@as(object.ObjectType, left) != .integer or @as(object.ObjectType, right) != .integer) return nil_obj;
+
+    return evalIntegerInfixExpression(operator, left, right);
+}
+
+fn evalIntegerInfixExpression(operator: []const u8, left: object.Object, right: object.Object) object.Object {
+    const leftVal = left.integer.value;
+    const rightVal = right.integer.value;
+    const op = std.meta.stringToEnum(Operator, operator) orelse return nil_obj;
+
+    switch (op) {
+        .@"+" => return object.Object{ .integer = .{ .value = leftVal + rightVal } },
+        .@"-" => return object.Object{ .integer = .{ .value = leftVal - rightVal } },
+        .@"*" => return object.Object{ .integer = .{ .value = leftVal * rightVal } },
+        .@"/" => return object.Object{
+            .integer = .{ .value = std.math.divExact(i64, leftVal, rightVal) catch return nil_obj },
+        },
+        else => return nil_obj,
+    }
+}
+
 test {
     std.testing.refAllDecls(@This());
 }
@@ -87,6 +119,17 @@ test "eval integer expression" {
         .{ .input = "10", .expected = 10 },
         .{ .input = "-5", .expected = -5 },
         .{ .input = "-10", .expected = -10 },
+        .{ .input = "5 + 5 + 5 + 5 - 10", .expected = 10 },
+        .{ .input = "2 * 2 * 2 * 2 * 2", .expected = 32 },
+        .{ .input = "-50 + 100 + -50", .expected = 0 },
+        .{ .input = "5 * 2 + 10", .expected = 20 },
+        .{ .input = "5 + 2 * 10", .expected = 25 },
+        .{ .input = "20 + 2 * -10", .expected = 0 },
+        .{ .input = "50 / 2 * 2 + 10", .expected = 60 },
+        .{ .input = "2 * (5 + 10)", .expected = 30 },
+        .{ .input = "3 * 3 * 3 + 10", .expected = 37 },
+        .{ .input = "3 * (3 * 3) + 10", .expected = 37 },
+        .{ .input = "(5 + 10 * 2 + 15 / 3) * 2 + -10", .expected = 50 },
     };
 
     for (tests) |t| {
