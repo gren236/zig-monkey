@@ -5,6 +5,9 @@ const Lexer = @import("lexer.zig");
 const object = @import("object.zig");
 const Parser = @import("parser.zig");
 
+const true_obj = object.Object{ .boolean = .{ .value = true } };
+const false_obj = object.Object{ .boolean = .{ .value = false } };
+
 pub fn eval(node: *const ast.Node(.Common)) ?object.Object {
     switch (node.val) {
         .program => |prog| {
@@ -23,6 +26,7 @@ fn evalStatement(node: *const ast.Node(.Statement)) ?object.Object {
 fn evalExpression(node: *const ast.Node(.Expression)) ?object.Object {
     switch (node.val) {
         .int_literal => |int_lit| return object.Object{ .integer = .{ .value = int_lit.value } },
+        .boolean => |bool_lit| return if (bool_lit.value) true_obj else false_obj,
         else => return null,
     }
 }
@@ -56,6 +60,23 @@ test "eval integer expression" {
     }
 }
 
+test "eval boolean expression" {
+    const alloc = std.testing.allocator;
+
+    const tests = [_]struct {
+        input: []const u8,
+        expected: bool,
+    }{
+        .{ .input = "true", .expected = true },
+        .{ .input = "false", .expected = false },
+    };
+
+    for (tests) |t| {
+        const evaluated = try testEval(alloc, t.input);
+        try testBooleanObject(evaluated, t.expected);
+    }
+}
+
 fn testEval(alloc: std.mem.Allocator, input: []const u8) !object.Object {
     var l = Lexer.init(input);
     var p = Parser.init(&l);
@@ -69,4 +90,8 @@ fn testEval(alloc: std.mem.Allocator, input: []const u8) !object.Object {
 
 fn testIntegerObject(obj: object.Object, expected: i64) !void {
     try std.testing.expectEqual(expected, obj.integer.value);
+}
+
+fn testBooleanObject(obj: object.Object, expected: bool) !void {
+    try std.testing.expectEqual(expected, obj.boolean.value);
 }
