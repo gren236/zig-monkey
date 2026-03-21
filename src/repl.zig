@@ -31,19 +31,23 @@ pub fn start(in: *std.Io.Reader, out: *std.Io.Writer) !void {
 
         const line = try in.takeDelimiter('\n') orelse continue;
 
+        var arena = std.heap.ArenaAllocator.init(alloc);
+        defer arena.deinit();
+        const iter_alloc = arena.allocator();
+
         var lexer = Lexer.init(line);
         var parser = Parser.init(&lexer);
-        defer parser.deinit(alloc);
+        defer parser.deinit(iter_alloc);
 
-        var program = try parser.parseProgram(alloc);
-        defer program.deinit(alloc);
+        var program = try parser.parseProgram(iter_alloc);
+        defer program.deinit(iter_alloc);
 
         if (parser.errors.items.len != 0) {
             try printParserErrors(out, parser.errors);
             continue;
         }
 
-        var evaluated = evaluator.eval(&ast.Node(.Common){ .val = .{ .program = program } });
+        var evaluated = try evaluator.eval(alloc, &ast.Node(.Common){ .val = .{ .program = program } });
         try evaluated.inspect(out);
         _ = try out.write("\n");
 
