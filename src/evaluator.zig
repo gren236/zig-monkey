@@ -55,6 +55,10 @@ const Operator = enum {
     @"+",
     @"*",
     @"/",
+    @"<",
+    @">",
+    @"==",
+    @"!=",
 };
 
 fn evalPrefixExpression(operator: []const u8, right: object.Object) object.Object {
@@ -82,24 +86,38 @@ fn evalMinusPrefixOperatorExpression(right: object.Object) object.Object {
 }
 
 fn evalInfixExpression(operator: []const u8, left: object.Object, right: object.Object) object.Object {
+    const op = std.meta.stringToEnum(Operator, operator) orelse return nil_obj;
+
+    // special case if both sides are booleans
+    if (@as(object.ObjectType, left) == .boolean and @as(object.ObjectType, right) == .boolean) {
+        return switch (op) {
+            .@"==" => if (left.boolean.value == right.boolean.value) true_obj else false_obj,
+            .@"!=" => if (left.boolean.value != right.boolean.value) true_obj else false_obj,
+            else => nil_obj,
+        };
+    }
+
     // check that the tag active for left/right object union is indeed .integer
     if (@as(object.ObjectType, left) != .integer or @as(object.ObjectType, right) != .integer) return nil_obj;
 
-    return evalIntegerInfixExpression(operator, left, right);
+    return evalIntegerInfixExpression(op, left, right);
 }
 
-fn evalIntegerInfixExpression(operator: []const u8, left: object.Object, right: object.Object) object.Object {
+fn evalIntegerInfixExpression(operator: Operator, left: object.Object, right: object.Object) object.Object {
     const leftVal = left.integer.value;
     const rightVal = right.integer.value;
-    const op = std.meta.stringToEnum(Operator, operator) orelse return nil_obj;
 
-    switch (op) {
+    switch (operator) {
         .@"+" => return object.Object{ .integer = .{ .value = leftVal + rightVal } },
         .@"-" => return object.Object{ .integer = .{ .value = leftVal - rightVal } },
         .@"*" => return object.Object{ .integer = .{ .value = leftVal * rightVal } },
         .@"/" => return object.Object{
             .integer = .{ .value = std.math.divExact(i64, leftVal, rightVal) catch return nil_obj },
         },
+        .@"<" => return if (leftVal < rightVal) true_obj else false_obj,
+        .@">" => return if (leftVal > rightVal) true_obj else false_obj,
+        .@"==" => return if (leftVal == rightVal) true_obj else false_obj,
+        .@"!=" => return if (leftVal != rightVal) true_obj else false_obj,
         else => return nil_obj,
     }
 }
@@ -147,6 +165,23 @@ test "eval boolean expression" {
     }{
         .{ .input = "true", .expected = true },
         .{ .input = "false", .expected = false },
+        .{ .input = "1 < 2", .expected = true },
+        .{ .input = "1 > 2", .expected = false },
+        .{ .input = "1 < 1", .expected = false },
+        .{ .input = "1 > 1", .expected = false },
+        .{ .input = "1 == 1", .expected = true },
+        .{ .input = "1 != 1", .expected = false },
+        .{ .input = "1 == 2", .expected = false },
+        .{ .input = "1 != 2", .expected = true },
+        .{ .input = "true == true", .expected = true },
+        .{ .input = "false == false", .expected = true },
+        .{ .input = "true == false", .expected = false },
+        .{ .input = "true != false", .expected = true },
+        .{ .input = "false != true", .expected = true },
+        .{ .input = "(1 < 2) == true", .expected = true },
+        .{ .input = "(1 < 2) == false", .expected = false },
+        .{ .input = "(1 > 2) == true", .expected = false },
+        .{ .input = "(1 > 2) == false", .expected = true },
     };
 
     for (tests) |t| {
