@@ -5,7 +5,7 @@ const Lexer = @import("lexer.zig");
 const object = @import("object.zig");
 const Parser = @import("parser.zig");
 
-fn eval(node: *const ast.Node(.Common)) ?object.Object {
+pub fn eval(node: *const ast.Node(.Common)) ?object.Object {
     switch (node.val) {
         .program => |prog| {
             return evalStatements(prog.statements);

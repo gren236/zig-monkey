@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const ast = @import("ast.zig");
+const evaluator = @import("evaluator.zig");
 const Lexer = @import("lexer.zig");
 const Parser = @import("parser.zig");
 
@@ -41,7 +43,8 @@ pub fn start(in: *std.Io.Reader, out: *std.Io.Writer) !void {
             continue;
         }
 
-        try program.writeString(out);
+        var evaluated = evaluator.eval(&ast.Node(.Common){ .val = .{ .program = program } }) orelse continue;
+        try evaluated.inspect(out);
         _ = try out.write("\n");
 
         try out.flush();

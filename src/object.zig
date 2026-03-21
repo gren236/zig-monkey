@@ -11,9 +11,9 @@ pub const Object = union(ObjectType) {
     boolean: Boolean,
     nil: Nil,
 
-    fn inspect(self: Object, buf: []u8) !usize {
+    pub fn inspect(self: Object, out: *std.Io.Writer) !void {
         return switch (self) {
-            inline else => |obj| obj.inspect(buf),
+            inline else => |obj| obj.inspect(out),
         };
     }
 };
@@ -21,22 +21,21 @@ pub const Object = union(ObjectType) {
 pub const Integer = struct {
     value: i64,
 
-    fn inspect(self: *@This(), buf: []u8) !usize {
-        return std.fmt.printInt(buf, self.value, 10, .lower, .{});
+    fn inspect(self: @This(), out: *std.Io.Writer) !void {
+        try out.printInt(self.value, 10, .lower, .{});
     }
 };
 
 pub const Boolean = struct {
     value: bool,
 
-    fn inspect(self: *@This(), buf: []u8) !usize {
-        return (try std.fmt.bufPrint(buf, "{}", .{self.value})).len;
+    fn inspect(self: @This(), out: *std.Io.Writer) !void {
+        try out.print("{}", .{self.value});
     }
 };
 
 pub const Nil = struct {
-    fn inspect(_: *@This(), buf: []u8) !usize {
-        try std.fmt.bufPrint(buf, "nil", .{});
-        return 3;
+    fn inspect(_: @This(), out: *std.Io.Writer) !void {
+        _ = try out.write("nil");
     }
 };
