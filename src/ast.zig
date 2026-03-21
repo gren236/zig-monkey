@@ -16,6 +16,7 @@ pub const StatementNode = union(enum) {
     let_stmt: LetStatement,
     return_stmt: ReturnStatement,
     expression_stmt: ExpressionStatement,
+    block_stmt: BlockStatement,
 };
 
 pub const ExpressionNode = union(enum) {

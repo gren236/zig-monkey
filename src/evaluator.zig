@@ -20,6 +20,7 @@ pub fn eval(node: *const ast.Node(.Common)) object.Object {
 fn evalStatement(node: *const ast.Node(.Statement)) object.Object {
     switch (node.val) {
         .expression_stmt => |stmt| return evalExpression(stmt.expression),
+        .block_stmt => |stmt| return evalStatements(stmt.statements),
         else => return nil_obj,
     }
 }
@@ -37,6 +38,7 @@ fn evalExpression(node: *const ast.Node(.Expression)) object.Object {
             const right = evalExpression(inf.right);
             return evalInfixExpression(inf.operator, left, right);
         },
+        .if_exp => |if_exp| return evalIfExpression(if_exp),
         else => return nil_obj,
     }
 }
@@ -120,6 +122,26 @@ fn evalIntegerInfixExpression(operator: Operator, left: object.Object, right: ob
         .@"!=" => return if (leftVal != rightVal) true_obj else false_obj,
         else => return nil_obj,
     }
+}
+
+fn evalIfExpression(ie: ast.IfExpression) object.Object {
+    const condition = evalExpression(ie.condition);
+
+    if (isTruthy(condition)) {
+        return evalStatement(&ast.Node(.Statement){ .val = .{ .block_stmt = ie.consequence.* } });
+    } else if (ie.alternative) |alt| {
+        return evalStatement(&ast.Node(.Statement){ .val = .{ .block_stmt = alt.* } });
+    } else {
+        return nil_obj;
+    }
+}
+
+fn isTruthy(obj: object.Object) bool {
+    return switch (obj) {
+        .nil => false,
+        .boolean => obj.boolean.value,
+        else => true,
+    };
 }
 
 test {
@@ -209,6 +231,36 @@ test "bang operator" {
         const evaluated = try testEval(alloc, t.input);
         try testBooleanObject(evaluated, t.expected);
     }
+}
+
+test "if else expression" {
+    const alloc = std.testing.allocator;
+
+    const tests = [_]struct {
+        input: []const u8,
+        expected: ?i64,
+    }{
+        .{ .input = "if (true) { 10 }", .expected = 10 },
+        .{ .input = "if (false) { 10 }", .expected = null },
+        .{ .input = "if (1) { 10 }", .expected = 10 },
+        .{ .input = "if (1 < 2) { 10 }", .expected = 10 },
+        .{ .input = "if (1 > 2) { 10 }", .expected = null },
+        .{ .input = "if (1 > 2) { 10 } else { 20 }", .expected = 20 },
+        .{ .input = "if (1 < 2) { 10 } else { 20 }", .expected = 10 },
+    };
+
+    for (tests) |t| {
+        const evaluated = try testEval(alloc, t.input);
+        if (t.expected) |exp| {
+            try testIntegerObject(evaluated, exp);
+        } else {
+            try testNilObject(evaluated);
+        }
+    }
+}
+
+fn testNilObject(obj: object.Object) !void {
+    try std.testing.expectEqual(object.ObjectType.nil, @as(object.ObjectType, obj));
 }
 
 fn testEval(alloc: std.mem.Allocator, input: []const u8) !object.Object {
