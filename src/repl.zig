@@ -43,7 +43,7 @@ pub fn start(in: *std.Io.Reader, out: *std.Io.Writer) !void {
             continue;
         }
 
-        var evaluated = evaluator.eval(&ast.Node(.Common){ .val = .{ .program = program } }) orelse continue;
+        var evaluated = evaluator.eval(&ast.Node(.Common){ .val = .{ .program = program } });
         try evaluated.inspect(out);
         _ = try out.write("\n");
 
