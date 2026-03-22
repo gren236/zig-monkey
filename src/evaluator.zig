@@ -9,6 +9,16 @@ const true_obj = object.Object{ .boolean = .{ .value = true } };
 const false_obj = object.Object{ .boolean = .{ .value = false } };
 const nil_obj = object.Object{ .nil = .{} };
 
+fn newError(alloc: std.mem.Allocator, comptime format: []const u8, args: anytype) !object.Object {
+    return object.Object{
+        .err = .{ .message = try std.fmt.allocPrint(alloc, format, args) },
+    };
+}
+
+fn isError(obj: object.Object) bool {
+    return @as(object.ObjectType, obj) == .err;
+}
+
 pub fn eval(alloc: std.mem.Allocator, node: *const ast.Node(.Common)) !object.Object {
     switch (node.val) {
         .program => |prog| {
@@ -23,6 +33,8 @@ fn evalStatement(alloc: std.mem.Allocator, node: *const ast.Node(.Statement)) !o
         .block_stmt => |stmt| return try evalBlockStatements(alloc, stmt),
         .return_stmt => |stmt| {
             const val = try evalExpression(alloc, stmt.return_value);
+            if (isError(val)) return val;
+
             const val_ptr = try alloc.create(object.Object);
             val_ptr.* = val;
             return object.Object{ .return_val = .{ .value = val_ptr } };
@@ -37,12 +49,17 @@ fn evalExpression(alloc: std.mem.Allocator, node: *const ast.Node(.Expression)) 
         .boolean => |bool_lit| return if (bool_lit.value) true_obj else false_obj,
         .prefix => |pref| {
             const right = try evalExpression(alloc, pref.right);
-            return evalPrefixExpression(pref.operator, right);
+            if (isError(right)) return right;
+
+            return try evalPrefixExpression(alloc, pref.operator, right);
         },
         .infix => |inf| {
             const left = try evalExpression(alloc, inf.left);
+            if (isError(left)) return left;
             const right = try evalExpression(alloc, inf.right);
-            return evalInfixExpression(inf.operator, left, right);
+            if (isError(right)) return right;
+
+            return evalInfixExpression(alloc, inf.operator, left, right);
         },
         .if_exp => |if_exp| return try evalIfExpression(alloc, if_exp),
         else => return nil_obj,
@@ -55,8 +72,10 @@ fn evalProgram(alloc: std.mem.Allocator, program: ast.Program) anyerror!object.O
     for (program.statements) |stmt| {
         result = try evalStatement(alloc, &stmt);
 
-        if (@as(object.ObjectType, result) == .return_val) {
-            return result.return_val.value.*;
+        switch (result) {
+            .return_val => return result.return_val.value.*,
+            .err => return result,
+            else => continue,
         }
     }
 
@@ -69,8 +88,9 @@ fn evalBlockStatements(alloc: std.mem.Allocator, block: ast.BlockStatement) anye
     for (block.statements) |stmt| {
         result = try evalStatement(alloc, &stmt);
 
-        if (@as(object.ObjectType, result) == .return_val) {
-            return result;
+        switch (result) {
+            .return_val, .err => return result,
+            else => continue,
         }
     }
 
@@ -89,12 +109,15 @@ const Operator = enum {
     @"!=",
 };
 
-fn evalPrefixExpression(operator: []const u8, right: object.Object) object.Object {
+fn evalPrefixExpression(alloc: std.mem.Allocator, operator: []const u8, right: object.Object) !object.Object {
     const op = std.meta.stringToEnum(Operator, operator) orelse return nil_obj;
     switch (op) {
         .@"!" => return evalBangOperatorExpression(right),
-        .@"-" => return evalMinusPrefixOperatorExpression(right),
-        else => return nil_obj,
+        .@"-" => return try evalMinusPrefixOperatorExpression(alloc, right),
+        else => return try newError(alloc, "unknown operator: {s}{s}", .{
+            operator,
+            right.tagName(),
+        }),
     }
 }
 
@@ -106,32 +129,44 @@ fn evalBangOperatorExpression(right: object.Object) object.Object {
     };
 }
 
-fn evalMinusPrefixOperatorExpression(right: object.Object) object.Object {
+fn evalMinusPrefixOperatorExpression(alloc: std.mem.Allocator, right: object.Object) !object.Object {
     // check that the tag active for object union is indeed .integer
-    if (@as(object.ObjectType, right) != .integer) return nil_obj;
+    if (@as(object.ObjectType, right) != .integer) {
+        return try newError(alloc, "unknown operator: -{s}", .{right.tagName()});
+    }
 
     return object.Object{ .integer = .{ .value = -right.integer.value } };
 }
 
-fn evalInfixExpression(operator: []const u8, left: object.Object, right: object.Object) object.Object {
+fn evalInfixExpression(alloc: std.mem.Allocator, operator: []const u8, left: object.Object, right: object.Object) !object.Object {
     const op = std.meta.stringToEnum(Operator, operator) orelse return nil_obj;
+
+    // check that the tags active for left/right objects are the same
+    if (@as(object.ObjectType, left) != @as(object.ObjectType, right)) {
+        return try newError(alloc, "type mismatch: {s} {s} {s}", .{
+            left.tagName(),
+            operator,
+            right.tagName(),
+        });
+    }
 
     // special case if both sides are booleans
     if (@as(object.ObjectType, left) == .boolean and @as(object.ObjectType, right) == .boolean) {
         return switch (op) {
             .@"==" => if (left.boolean.value == right.boolean.value) true_obj else false_obj,
             .@"!=" => if (left.boolean.value != right.boolean.value) true_obj else false_obj,
-            else => nil_obj,
+            else => try newError(alloc, "unknown operator: {s} {s} {s}", .{
+                left.tagName(),
+                operator,
+                right.tagName(),
+            }),
         };
     }
 
-    // check that the tag active for left/right object union is indeed .integer
-    if (@as(object.ObjectType, left) != .integer or @as(object.ObjectType, right) != .integer) return nil_obj;
-
-    return evalIntegerInfixExpression(op, left, right);
+    return try evalIntegerInfixExpression(alloc, op, left, right);
 }
 
-fn evalIntegerInfixExpression(operator: Operator, left: object.Object, right: object.Object) object.Object {
+fn evalIntegerInfixExpression(alloc: std.mem.Allocator, operator: Operator, left: object.Object, right: object.Object) !object.Object {
     const leftVal = left.integer.value;
     const rightVal = right.integer.value;
 
@@ -146,12 +181,17 @@ fn evalIntegerInfixExpression(operator: Operator, left: object.Object, right: ob
         .@">" => return if (leftVal > rightVal) true_obj else false_obj,
         .@"==" => return if (leftVal == rightVal) true_obj else false_obj,
         .@"!=" => return if (leftVal != rightVal) true_obj else false_obj,
-        else => return nil_obj,
+        else => return try newError(alloc, "unknown operator: {s} {s} {s}", .{
+            left.tagName(),
+            @tagName(operator),
+            right.tagName(),
+        }),
     }
 }
 
 fn evalIfExpression(alloc: std.mem.Allocator, ie: ast.IfExpression) anyerror!object.Object {
     const condition = try evalExpression(alloc, ie.condition);
+    if (isError(condition)) return condition;
 
     if (isTruthy(condition)) {
         return try evalStatement(alloc, &ast.Node(.Statement){ .val = .{ .block_stmt = ie.consequence.* } });
@@ -311,6 +351,61 @@ test "return statements" {
     for (tests) |t| {
         const evaluated = try testEval(alloc, t.input);
         try testIntegerObject(evaluated, t.expected);
+    }
+}
+
+test "error handling" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const tests = [_]struct {
+        input: []const u8,
+        expected: []const u8,
+    }{
+        .{
+            .input = "5 + true",
+            .expected = "type mismatch: INTEGER + BOOLEAN",
+        },
+        .{
+            .input = "5 + true; 5;",
+            .expected = "type mismatch: INTEGER + BOOLEAN",
+        },
+        .{
+            .input = "-true",
+            .expected = "unknown operator: -BOOLEAN",
+        },
+        .{
+            .input = "true + false",
+            .expected = "unknown operator: BOOLEAN + BOOLEAN",
+        },
+        .{
+            .input = "5; true + false; 5",
+            .expected = "unknown operator: BOOLEAN + BOOLEAN",
+        },
+        .{
+            .input = "if (10 > 1) { true + false; }",
+            .expected = "unknown operator: BOOLEAN + BOOLEAN",
+        },
+        .{
+            .input =
+            \\if (10 > 1) {
+            \\  if (10 > 1) {
+            \\    return true + false;
+            \\  }
+            \\
+            \\  return 1;
+            \\}
+            ,
+            .expected = "unknown operator: BOOLEAN + BOOLEAN",
+        },
+    };
+
+    for (tests) |t| {
+        const evaluated = try testEval(alloc, t.input);
+
+        try std.testing.expectEqual(object.ObjectType.err, @as(object.ObjectType, evaluated));
+        try std.testing.expectEqualStrings(t.expected, evaluated.err.message);
     }
 }
 

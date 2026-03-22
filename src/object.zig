@@ -5,6 +5,7 @@ pub const ObjectType = enum {
     boolean,
     nil,
     return_val,
+    err,
 };
 
 pub const Object = union(ObjectType) {
@@ -12,10 +13,21 @@ pub const Object = union(ObjectType) {
     boolean: Boolean,
     nil: Nil,
     return_val: ReturnValue,
+    err: Error,
 
     pub fn inspect(self: Object, out: *std.Io.Writer) anyerror!void {
         return switch (self) {
             inline else => |obj| obj.inspect(out),
+        };
+    }
+
+    pub fn tagName(self: Object) []const u8 {
+        return switch (self) {
+            .integer => "INTEGER",
+            .boolean => "BOOLEAN",
+            .nil => "NIL",
+            .return_val => "RETURN_VALUE",
+            .err => "ERROR",
         };
     }
 };
@@ -41,6 +53,14 @@ pub const ReturnValue = struct {
 
     fn inspect(self: @This(), out: *std.Io.Writer) !void {
         try self.value.inspect(out);
+    }
+};
+
+pub const Error = struct {
+    message: []const u8,
+
+    fn inspect(self: @This(), out: *std.Io.Writer) !void {
+        try out.print("ERROR: {s}", .{self.message});
     }
 };
 
