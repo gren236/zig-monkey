@@ -4,6 +4,7 @@ const ast = @import("ast.zig");
 const evaluator = @import("evaluator.zig");
 const Lexer = @import("lexer.zig");
 const Parser = @import("parser.zig");
+const object = @import("object.zig");
 
 const prompt = ">> ";
 const monkey_face =
@@ -24,6 +25,9 @@ const monkey_face =
 pub fn start(in: *std.Io.Reader, out: *std.Io.Writer) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     const alloc = gpa.allocator();
+
+    var env = object.Environment.init(alloc);
+    defer env.deinit();
 
     while (true) {
         try out.print(prompt, .{});
@@ -47,7 +51,11 @@ pub fn start(in: *std.Io.Reader, out: *std.Io.Writer) !void {
             continue;
         }
 
-        var evaluated = try evaluator.eval(alloc, &ast.Node(.Common){ .val = .{ .program = program } });
+        var evaluated = try evaluator.eval(
+            alloc,
+            &ast.Node(.Common){ .val = .{ .program = program } },
+            &env,
+        );
         try evaluated.inspect(out);
         _ = try out.write("\n");
 

@@ -19,58 +19,19 @@ fn isError(obj: object.Object) bool {
     return @as(object.ObjectType, obj) == .err;
 }
 
-pub fn eval(alloc: std.mem.Allocator, node: *const ast.Node(.Common)) !object.Object {
+pub fn eval(alloc: std.mem.Allocator, node: *const ast.Node(.Common), env: *object.Environment) !object.Object {
     switch (node.val) {
         .program => |prog| {
-            return try evalProgram(alloc, prog);
+            return try evalProgram(alloc, prog, env);
         },
     }
 }
 
-fn evalStatement(alloc: std.mem.Allocator, node: *const ast.Node(.Statement)) !object.Object {
-    switch (node.val) {
-        .expression_stmt => |stmt| return try evalExpression(alloc, stmt.expression),
-        .block_stmt => |stmt| return try evalBlockStatements(alloc, stmt),
-        .return_stmt => |stmt| {
-            const val = try evalExpression(alloc, stmt.return_value);
-            if (isError(val)) return val;
-
-            const val_ptr = try alloc.create(object.Object);
-            val_ptr.* = val;
-            return object.Object{ .return_val = .{ .value = val_ptr } };
-        },
-        else => return nil_obj,
-    }
-}
-
-fn evalExpression(alloc: std.mem.Allocator, node: *const ast.Node(.Expression)) anyerror!object.Object {
-    switch (node.val) {
-        .int_literal => |int_lit| return object.Object{ .integer = .{ .value = int_lit.value } },
-        .boolean => |bool_lit| return if (bool_lit.value) true_obj else false_obj,
-        .prefix => |pref| {
-            const right = try evalExpression(alloc, pref.right);
-            if (isError(right)) return right;
-
-            return try evalPrefixExpression(alloc, pref.operator, right);
-        },
-        .infix => |inf| {
-            const left = try evalExpression(alloc, inf.left);
-            if (isError(left)) return left;
-            const right = try evalExpression(alloc, inf.right);
-            if (isError(right)) return right;
-
-            return evalInfixExpression(alloc, inf.operator, left, right);
-        },
-        .if_exp => |if_exp| return try evalIfExpression(alloc, if_exp),
-        else => return nil_obj,
-    }
-}
-
-fn evalProgram(alloc: std.mem.Allocator, program: ast.Program) anyerror!object.Object {
+fn evalProgram(alloc: std.mem.Allocator, program: ast.Program, env: *object.Environment) anyerror!object.Object {
     var result = nil_obj;
 
     for (program.statements) |stmt| {
-        result = try evalStatement(alloc, &stmt);
+        result = try evalStatement(alloc, &stmt, env);
 
         switch (result) {
             .return_val => return result.return_val.value.*,
@@ -82,11 +43,56 @@ fn evalProgram(alloc: std.mem.Allocator, program: ast.Program) anyerror!object.O
     return result;
 }
 
-fn evalBlockStatements(alloc: std.mem.Allocator, block: ast.BlockStatement) anyerror!object.Object {
+fn evalStatement(alloc: std.mem.Allocator, node: *const ast.Node(.Statement), env: *object.Environment) !object.Object {
+    switch (node.val) {
+        .expression_stmt => |stmt| return try evalExpression(alloc, stmt.expression, env),
+        .block_stmt => |stmt| return try evalBlockStatements(alloc, stmt, env),
+        .return_stmt => |stmt| {
+            const val = try evalExpression(alloc, stmt.return_value, env);
+            if (isError(val)) return val;
+
+            const val_ptr = try alloc.create(object.Object);
+            val_ptr.* = val;
+            return object.Object{ .return_val = .{ .value = val_ptr } };
+        },
+        .let_stmt => |stmt| {
+            const val = try evalExpression(alloc, stmt.value, env);
+            if (isError(val)) return val;
+
+            return try env.set(stmt.name.value, val);
+        },
+    }
+}
+
+fn evalExpression(alloc: std.mem.Allocator, node: *const ast.Node(.Expression), env: *object.Environment) anyerror!object.Object {
+    switch (node.val) {
+        .int_literal => |int_lit| return object.Object{ .integer = .{ .value = int_lit.value } },
+        .boolean => |bool_lit| return if (bool_lit.value) true_obj else false_obj,
+        .prefix => |pref| {
+            const right = try evalExpression(alloc, pref.right, env);
+            if (isError(right)) return right;
+
+            return try evalPrefixExpression(alloc, pref.operator, right, env);
+        },
+        .infix => |inf| {
+            const left = try evalExpression(alloc, inf.left, env);
+            if (isError(left)) return left;
+            const right = try evalExpression(alloc, inf.right, env);
+            if (isError(right)) return right;
+
+            return evalInfixExpression(alloc, inf.operator, left, right, env);
+        },
+        .if_exp => |if_exp| return try evalIfExpression(alloc, if_exp, env),
+        .ident => |ident_exp| return try evalIdentifier(alloc, ident_exp, env),
+        else => return nil_obj,
+    }
+}
+
+fn evalBlockStatements(alloc: std.mem.Allocator, block: ast.BlockStatement, env: *object.Environment) anyerror!object.Object {
     var result = nil_obj;
 
     for (block.statements) |stmt| {
-        result = try evalStatement(alloc, &stmt);
+        result = try evalStatement(alloc, &stmt, env);
 
         switch (result) {
             .return_val, .err => return result,
@@ -95,6 +101,10 @@ fn evalBlockStatements(alloc: std.mem.Allocator, block: ast.BlockStatement) anye
     }
 
     return result;
+}
+
+fn evalIdentifier(alloc: std.mem.Allocator, node: ast.Identifier, env: *object.Environment) !object.Object {
+    return env.get(node.value) orelse newError(alloc, "identifier not found: {s}", .{node.value});
 }
 
 const Operator = enum {
@@ -109,7 +119,7 @@ const Operator = enum {
     @"!=",
 };
 
-fn evalPrefixExpression(alloc: std.mem.Allocator, operator: []const u8, right: object.Object) !object.Object {
+fn evalPrefixExpression(alloc: std.mem.Allocator, operator: []const u8, right: object.Object, _: *object.Environment) !object.Object {
     const op = std.meta.stringToEnum(Operator, operator) orelse return nil_obj;
     switch (op) {
         .@"!" => return evalBangOperatorExpression(right),
@@ -138,7 +148,13 @@ fn evalMinusPrefixOperatorExpression(alloc: std.mem.Allocator, right: object.Obj
     return object.Object{ .integer = .{ .value = -right.integer.value } };
 }
 
-fn evalInfixExpression(alloc: std.mem.Allocator, operator: []const u8, left: object.Object, right: object.Object) !object.Object {
+fn evalInfixExpression(
+    alloc: std.mem.Allocator,
+    operator: []const u8,
+    left: object.Object,
+    right: object.Object,
+    _: *object.Environment,
+) !object.Object {
     const op = std.meta.stringToEnum(Operator, operator) orelse return nil_obj;
 
     // check that the tags active for left/right objects are the same
@@ -189,14 +205,22 @@ fn evalIntegerInfixExpression(alloc: std.mem.Allocator, operator: Operator, left
     }
 }
 
-fn evalIfExpression(alloc: std.mem.Allocator, ie: ast.IfExpression) anyerror!object.Object {
-    const condition = try evalExpression(alloc, ie.condition);
+fn evalIfExpression(alloc: std.mem.Allocator, ie: ast.IfExpression, env: *object.Environment) anyerror!object.Object {
+    const condition = try evalExpression(alloc, ie.condition, env);
     if (isError(condition)) return condition;
 
     if (isTruthy(condition)) {
-        return try evalStatement(alloc, &ast.Node(.Statement){ .val = .{ .block_stmt = ie.consequence.* } });
+        return try evalStatement(
+            alloc,
+            &ast.Node(.Statement){ .val = .{ .block_stmt = ie.consequence.* } },
+            env,
+        );
     } else if (ie.alternative) |alt| {
-        return try evalStatement(alloc, &ast.Node(.Statement){ .val = .{ .block_stmt = alt.* } });
+        return try evalStatement(
+            alloc,
+            &ast.Node(.Statement){ .val = .{ .block_stmt = alt.* } },
+            env,
+        );
     } else {
         return nil_obj;
     }
@@ -399,6 +423,10 @@ test "error handling" {
             ,
             .expected = "unknown operator: BOOLEAN + BOOLEAN",
         },
+        .{
+            .input = "foobar",
+            .expected = "identifier not found: foobar",
+        },
     };
 
     for (tests) |t| {
@@ -406,6 +434,27 @@ test "error handling" {
 
         try std.testing.expectEqual(object.ObjectType.err, @as(object.ObjectType, evaluated));
         try std.testing.expectEqualStrings(t.expected, evaluated.err.message);
+    }
+}
+
+test "let statements" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const tests = [_]struct {
+        input: []const u8,
+        expected: i64,
+    }{
+        .{ .input = "let a = 5; a;", .expected = 5 },
+        .{ .input = "let a = 5 * 5; a;", .expected = 25 },
+        .{ .input = "let a = 5; let b = a; b;", .expected = 5 },
+        .{ .input = "let a = 5; let b = a; let c = a + b + 5; c;", .expected = 15 },
+    };
+
+    for (tests) |t| {
+        const evaluated = try testEval(alloc, t.input);
+        try testIntegerObject(evaluated, t.expected);
     }
 }
 
@@ -421,7 +470,13 @@ fn testEval(alloc: std.mem.Allocator, input: []const u8) !object.Object {
     var program = try p.parseProgram(alloc);
     defer program.deinit(alloc);
 
-    return try eval(alloc, &ast.Node(.Common){ .val = .{ .program = program } });
+    var env = object.Environment.init(alloc);
+
+    return try eval(
+        alloc,
+        &ast.Node(.Common){ .val = .{ .program = program } },
+        &env,
+    );
 }
 
 fn testIntegerObject(obj: object.Object, expected: i64) !void {
