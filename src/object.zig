@@ -23,6 +23,18 @@ pub const Object = union(ObjectType) {
         };
     }
 
+    pub fn clone(self: Object, alloc: std.mem.Allocator) anyerror!Object {
+        return switch (self) {
+            inline else => |obj| obj.clone(alloc),
+        };
+    }
+
+    pub fn deinit(self: Object, alloc: std.mem.Allocator) void {
+        return switch (self) {
+            inline else => |obj| obj.deinit(alloc),
+        };
+    }
+
     pub fn tagName(self: Object) []const u8 {
         return switch (self) {
             .integer => "INTEGER",
@@ -41,6 +53,12 @@ pub const Integer = struct {
     fn inspect(self: @This(), out: *std.Io.Writer) !void {
         try out.printInt(self.value, 10, .lower, .{});
     }
+
+    fn clone(self: @This(), _: std.mem.Allocator) !Object {
+        return .{ .integer = self };
+    }
+
+    fn deinit(_: @This(), _: std.mem.Allocator) void {}
 };
 
 pub const Boolean = struct {
@@ -49,6 +67,12 @@ pub const Boolean = struct {
     fn inspect(self: @This(), out: *std.Io.Writer) !void {
         try out.print("{}", .{self.value});
     }
+
+    fn clone(self: @This(), _: std.mem.Allocator) !Object {
+        return .{ .boolean = self };
+    }
+
+    fn deinit(_: @This(), _: std.mem.Allocator) void {}
 };
 
 pub const ReturnValue = struct {
@@ -57,26 +81,42 @@ pub const ReturnValue = struct {
     fn inspect(self: @This(), out: *std.Io.Writer) !void {
         try self.value.inspect(out);
     }
+
+    fn clone(self: @This(), alloc: std.mem.Allocator) !Object {
+        const cloned_val = try alloc.create(Object);
+        cloned_val.* = self.value.clone(alloc);
+        return .{ .return_val = .{ .value = cloned_val } };
+    }
+
+    fn deinit(self: @This(), alloc: std.mem.Allocator) void {
+        self.value.deinit(alloc);
+        alloc.destroy(self.value);
+    }
 };
 
 pub const Environment = struct {
     alloc: std.mem.Allocator,
-    store: std.StringHashMapUnmanaged(Object),
+    store: *std.StringHashMapUnmanaged(Object),
 
-    pub fn init(alloc: std.mem.Allocator) Environment {
-        return .{
+    pub fn init(alloc: std.mem.Allocator) !Environment {
+        const env = Environment{
             .alloc = alloc,
-            .store = std.StringHashMapUnmanaged(Object).empty,
+            .store = try alloc.create(std.StringHashMapUnmanaged(Object)),
         };
+        env.store.* = std.StringHashMapUnmanaged(Object).empty;
+
+        return env;
     }
 
-    pub fn deinit(self: *@This()) void {
-        var iter = self.store.keyIterator();
-        while (iter.next()) |key| {
-            self.alloc.free(key.*);
+    pub fn deinit(self: @This(), _: std.mem.Allocator) void {
+        var iter = self.store.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.deinit(self.alloc);
+            self.alloc.free(entry.key_ptr.*);
         }
 
         self.store.deinit(self.alloc);
+        self.alloc.destroy(self.store);
     }
 
     pub fn get(self: *@This(), name: []const u8) ?Object {
@@ -84,10 +124,7 @@ pub const Environment = struct {
     }
 
     pub fn set(self: *@This(), name: []const u8, val: Object) !Object {
-        const new_name = try self.alloc.alloc(u8, name.len);
-        @memcpy(new_name, name);
-
-        try self.store.put(self.alloc, new_name, val);
+        try self.store.put(self.alloc, try self.alloc.dupe(u8, name), val);
         return val;
     }
 
@@ -101,6 +138,10 @@ pub const Environment = struct {
             _ = try out.write("\n");
         }
     }
+
+    fn clone(_: @This(), _: std.mem.Allocator) !Object {
+        @panic("not allowed");
+    }
 };
 
 pub const Error = struct {
@@ -109,10 +150,26 @@ pub const Error = struct {
     fn inspect(self: @This(), out: *std.Io.Writer) !void {
         try out.print("ERROR: {s}", .{self.message});
     }
+
+    fn clone(self: @This(), alloc: std.mem.Allocator) !Object {
+        return .{ .err = .{
+            .message = alloc.dupe(u8, self.message),
+        } };
+    }
+
+    fn deinit(self: @This(), alloc: std.mem.Allocator) void {
+        alloc.free(self.message);
+    }
 };
 
 pub const Nil = struct {
     fn inspect(_: @This(), out: *std.Io.Writer) !void {
         _ = try out.write("nil");
     }
+
+    fn clone(self: @This(), _: std.mem.Allocator) !Object {
+        return .{ .nil = self.* };
+    }
+
+    fn deinit(_: @This(), _: std.mem.Allocator) void {}
 };

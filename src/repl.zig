@@ -26,8 +26,8 @@ pub fn start(in: *std.Io.Reader, out: *std.Io.Writer) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     const alloc = gpa.allocator();
 
-    var env = object.Environment.init(alloc);
-    defer env.deinit();
+    var env = try object.Environment.init(alloc);
+    defer env.deinit(alloc);
 
     while (true) {
         try out.print(prompt, .{});

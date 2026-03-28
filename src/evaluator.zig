@@ -470,7 +470,7 @@ fn testEval(alloc: std.mem.Allocator, input: []const u8) !object.Object {
     var program = try p.parseProgram(alloc);
     defer program.deinit(alloc);
 
-    var env = object.Environment.init(alloc);
+    var env = try object.Environment.init(alloc);
 
     return try eval(
         alloc,
