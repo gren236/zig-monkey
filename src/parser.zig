@@ -109,7 +109,7 @@ fn parseLetStatement(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Statem
 
     if (!try self.expectPeek(alloc, Lexer.TokenType.IDENT)) return error.ParseError;
 
-    const stmt_name = ast.Identifier{ .token = self.cur_token, .value = self.cur_token.literal };
+    const stmt_name = try ast.Identifier.init(alloc, self.cur_token);
 
     if (!try self.expectPeek(alloc, Lexer.TokenType.ASSIGN)) return error.ParseError;
 
@@ -229,9 +229,9 @@ fn parseExpression(self: *@This(), alloc: std.mem.Allocator, prec: Precedence) !
     return left_exp;
 }
 
-fn parseIdentifier(self: *@This(), _: std.mem.Allocator) !ast.Node(.Expression) {
+fn parseIdentifier(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expression) {
     return ast.Node(.Expression){ .val = .{
-        .ident = .{ .token = self.cur_token, .value = self.cur_token.literal },
+        .ident = try ast.Identifier.init(alloc, self.cur_token),
     } };
 }
 
@@ -399,14 +399,14 @@ fn parseFunctionParameters(self: *@This(), alloc: std.mem.Allocator) ![]ast.Iden
 
     self.nextToken();
 
-    try idents.append(alloc, ast.Identifier{ .token = self.cur_token, .value = self.cur_token.literal });
+    try idents.append(alloc, try ast.Identifier.init(alloc, self.cur_token));
     errdefer idents.deinit(alloc);
 
     while (self.peek_token.token_type == .COMMA) {
         self.nextToken();
         self.nextToken();
 
-        try idents.append(alloc, ast.Identifier{ .token = self.cur_token, .value = self.cur_token.literal });
+        try idents.append(alloc, try ast.Identifier.init(alloc, self.cur_token));
     }
 
     if (!try self.expectPeek(alloc, .RPAREN)) return error.ParseError;

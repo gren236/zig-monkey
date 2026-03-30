@@ -84,8 +84,72 @@ fn evalExpression(alloc: std.mem.Allocator, node: *const ast.Node(.Expression), 
         },
         .if_exp => |if_exp| return try evalIfExpression(alloc, if_exp, env),
         .ident => |ident_exp| return try evalIdentifier(alloc, ident_exp, env),
-        else => return nil_obj,
+        .fn_literal => |fn_exp| {
+            return object.Object{ .func = try object.Function.init(
+                alloc,
+                fn_exp.parameters,
+                fn_exp.body.*,
+                env,
+            ) };
+        },
+        .call_exp => |call_exp| {
+            const func = try evalExpression(alloc, call_exp.function, env);
+            if (isError(func)) return func;
+
+            const args = try evalExpressions(alloc, call_exp.arguments, env);
+            if (args.len == 1 and isError(args[0])) {
+                return args[0];
+            }
+
+            return try applyFunction(alloc, func, args);
+        },
     }
+}
+
+fn evalExpressions(alloc: std.mem.Allocator, exps: []ast.Node(.Expression), env: *object.Environment) ![]object.Object {
+    var result_list = std.ArrayListUnmanaged(object.Object).empty;
+
+    for (exps) |exp| {
+        const evaluated = try evalExpression(alloc, &exp, env);
+        try result_list.append(alloc, evaluated);
+
+        if (isError(evaluated)) break;
+    }
+
+    return try result_list.toOwnedSlice(alloc);
+}
+
+fn applyFunction(alloc: std.mem.Allocator, func: object.Object, args: []object.Object) !object.Object {
+    if (@as(object.ObjectType, func) != .func) return newError(alloc, "not a function: {s}", .{func.tagName()});
+    const function = func.func;
+
+    var extended_env = try extendFunctionEnv(function, args);
+    defer extended_env.deinit(extended_env.alloc);
+    const evaluated = try evalStatement(
+        alloc,
+        &ast.Node(.Statement){ .val = .{
+            .block_stmt = function.body,
+        } },
+        &extended_env,
+    );
+
+    return unwrapReturnValue(evaluated);
+}
+
+fn extendFunctionEnv(func: object.Function, args: []object.Object) !object.Environment {
+    var env = try object.Environment.initEnclosed(func.env);
+
+    for (0.., func.parameters) |i, param| {
+        _ = try env.set(param.value, args[i]);
+    }
+
+    return env;
+}
+
+fn unwrapReturnValue(obj: object.Object) object.Object {
+    if (@as(object.ObjectType, obj) == .return_val) return obj.return_val.value.*;
+
+    return obj;
 }
 
 fn evalBlockStatements(alloc: std.mem.Allocator, block: ast.BlockStatement, env: *object.Environment) anyerror!object.Object {
@@ -458,6 +522,57 @@ test "let statements" {
     }
 }
 
+test "function object" {
+    const input = "fn(x) { x + 2; };";
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const evaluated = try testEval(alloc, input);
+
+    try std.testing.expectEqual(1, evaluated.func.parameters.len);
+
+    var param_buf: [1024]u8 = undefined;
+    var param_writer = std.Io.Writer.fixed(&param_buf);
+    try evaluated.func.parameters[0].writeString(&param_writer);
+    try param_writer.flush();
+    try std.testing.expectEqualStrings("x", param_buf[0..1]);
+
+    var body_buf: [1024]u8 = undefined;
+    var body_writer = std.Io.Writer.fixed(&body_buf);
+    try evaluated.func.body.writeString(&body_writer);
+    try body_writer.flush();
+    try std.testing.expectEqualStrings("(x + 2)", body_buf[0..7]);
+}
+
+test "function application" {
+    const talloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(talloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const tests = [_]struct {
+        input: []const u8,
+        expected: i64,
+    }{
+        .{ .input = "let identity = fn(x) { x; }; identity(5);", .expected = 5 },
+        .{ .input = "let identity = fn(x) { return x; }; identity(5);", .expected = 5 },
+        .{ .input = "let double = fn(x) { x * 2; }; double(5);", .expected = 10 },
+        .{ .input = "let add = fn(x, y) { x + y; }; add(5, 5);", .expected = 10 },
+        .{ .input = "let add = fn(x, y) { x + y; }; add(5 + 5, add(5, 5));", .expected = 20 },
+        .{ .input = "fn(x) { x; }(5)", .expected = 5 },
+    };
+
+    for (tests) |t| {
+        var env = try object.Environment.init(talloc);
+        defer env.deinit(talloc);
+
+        const evaluated = try testEvalWithEnv(alloc, t.input, &env);
+        try testIntegerObject(evaluated, t.expected);
+    }
+}
+
 fn testNilObject(obj: object.Object) !void {
     try std.testing.expectEqual(object.ObjectType.nil, @as(object.ObjectType, obj));
 }
@@ -476,6 +591,21 @@ fn testEval(alloc: std.mem.Allocator, input: []const u8) !object.Object {
         alloc,
         &ast.Node(.Common){ .val = .{ .program = program } },
         &env,
+    );
+}
+
+fn testEvalWithEnv(alloc: std.mem.Allocator, input: []const u8, env: *object.Environment) !object.Object {
+    var l = Lexer.init(input);
+    var p = Parser.init(&l);
+    defer p.deinit(alloc);
+
+    var program = try p.parseProgram(alloc);
+    defer program.deinit(alloc);
+
+    return try eval(
+        alloc,
+        &ast.Node(.Common){ .val = .{ .program = program } },
+        env,
     );
 }
 

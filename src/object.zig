@@ -1,4 +1,5 @@
 const std = @import("std");
+const ast = @import("ast.zig");
 
 pub const ObjectType = enum {
     integer,
@@ -7,6 +8,7 @@ pub const ObjectType = enum {
     return_val,
     err,
     env,
+    func,
 };
 
 pub const Object = union(ObjectType) {
@@ -16,6 +18,7 @@ pub const Object = union(ObjectType) {
     return_val: ReturnValue,
     err: Error,
     env: Environment,
+    func: Function,
 
     pub fn inspect(self: Object, out: *std.Io.Writer) anyerror!void {
         return switch (self) {
@@ -43,6 +46,7 @@ pub const Object = union(ObjectType) {
             .return_val => "RETURN_VALUE",
             .err => "ERROR",
             .env => "ENVIRONMENT",
+            .func => "FUNCTION",
         };
     }
 };
@@ -84,7 +88,7 @@ pub const ReturnValue = struct {
 
     fn clone(self: @This(), alloc: std.mem.Allocator) !Object {
         const cloned_val = try alloc.create(Object);
-        cloned_val.* = self.value.clone(alloc);
+        cloned_val.* = try self.value.clone(alloc);
         return .{ .return_val = .{ .value = cloned_val } };
     }
 
@@ -97,13 +101,22 @@ pub const ReturnValue = struct {
 pub const Environment = struct {
     alloc: std.mem.Allocator,
     store: *std.StringHashMapUnmanaged(Object),
+    outer: ?*const Environment,
 
     pub fn init(alloc: std.mem.Allocator) !Environment {
         const env = Environment{
             .alloc = alloc,
             .store = try alloc.create(std.StringHashMapUnmanaged(Object)),
+            .outer = null,
         };
         env.store.* = std.StringHashMapUnmanaged(Object).empty;
+
+        return env;
+    }
+
+    pub fn initEnclosed(outer: *const Environment) !Environment {
+        var env = try Environment.init(outer.alloc);
+        env.outer = outer;
 
         return env;
     }
@@ -111,7 +124,7 @@ pub const Environment = struct {
     pub fn deinit(self: @This(), _: std.mem.Allocator) void {
         var iter = self.store.iterator();
         while (iter.next()) |entry| {
-            entry.value_ptr.deinit(self.alloc);
+            entry.value_ptr.*.deinit(self.alloc);
             self.alloc.free(entry.key_ptr.*);
         }
 
@@ -119,12 +132,37 @@ pub const Environment = struct {
         self.alloc.destroy(self.store);
     }
 
-    pub fn get(self: *@This(), name: []const u8) ?Object {
-        return self.store.get(name);
+    fn clone(self: @This(), alloc: std.mem.Allocator) !Object {
+        var new_env = try Environment.init(alloc);
+        try new_env.store.ensureTotalCapacity(alloc, self.store.capacity());
+
+        var iter = self.store.iterator();
+        while (iter.next()) |entry| {
+            try new_env.store.put(
+                alloc,
+                try alloc.dupe(u8, entry.key_ptr.*),
+                try entry.value_ptr.clone(alloc),
+            );
+        }
+
+        return .{ .env = new_env };
     }
 
-    pub fn set(self: *@This(), name: []const u8, val: Object) !Object {
-        try self.store.put(self.alloc, try self.alloc.dupe(u8, name), val);
+    pub fn get(self: @This(), name: []const u8) ?Object {
+        const obj_opt = self.store.get(name);
+        if (obj_opt) |obj| {
+            return obj;
+        }
+
+        if (self.outer) |outer| {
+            return outer.get(name);
+        }
+
+        return null;
+    }
+
+    pub fn set(self: @This(), name: []const u8, val: Object) !Object {
+        try self.store.put(self.alloc, try self.alloc.dupe(u8, name), try val.clone(self.alloc));
         return val;
     }
 
@@ -138,9 +176,64 @@ pub const Environment = struct {
             _ = try out.write("\n");
         }
     }
+};
 
-    fn clone(_: @This(), _: std.mem.Allocator) !Object {
-        @panic("not allowed");
+pub const Function = struct {
+    parameters: []ast.Identifier,
+    body: ast.BlockStatement,
+    env: *const Environment,
+
+    pub fn init(alloc: std.mem.Allocator, params: []ast.Identifier, body: ast.BlockStatement, env: *Environment) !Function {
+        var new_params = try alloc.alloc(ast.Identifier, params.len);
+        for (0.., params) |i, param| {
+            new_params[i] = (try param.clone(alloc)).val.ident;
+        }
+
+        return .{
+            .parameters = new_params,
+            .body = (try body.clone(alloc)).val.block_stmt,
+            .env = env,
+        };
+    }
+
+    fn inspect(self: @This(), out: *std.Io.Writer) !void {
+        _ = try out.write("fn(");
+        for (0.., self.parameters) |i, param| {
+            if (i != 0) _ = try out.write(", ");
+            try param.writeString(out);
+        }
+        _ = try out.write(") {\n");
+        try self.body.writeString(out);
+        _ = try out.write("\n}");
+    }
+
+    fn clone(self: @This(), alloc: std.mem.Allocator) !Object {
+        var new_params = try alloc.alloc(ast.Identifier, self.parameters.len);
+        for (0.., self.parameters) |i, param| {
+            new_params[i] = (try param.clone(alloc)).val.ident;
+        }
+
+        const new_body = (try self.body.clone(alloc)).val.block_stmt;
+
+        const new_env = try alloc.create(Environment);
+        new_env.* = (try self.env.clone(alloc)).env;
+
+        return .{ .func = .{
+            .parameters = new_params,
+            .body = new_body,
+            .env = new_env,
+        } };
+    }
+
+    fn deinit(self: @This(), alloc: std.mem.Allocator) void {
+        for (self.parameters) |param| {
+            param.deinit(alloc);
+        }
+        alloc.free(self.parameters);
+
+        self.body.deinit(alloc);
+        self.env.deinit(alloc);
+        alloc.destroy(self.env);
     }
 };
 
@@ -153,7 +246,7 @@ pub const Error = struct {
 
     fn clone(self: @This(), alloc: std.mem.Allocator) !Object {
         return .{ .err = .{
-            .message = alloc.dupe(u8, self.message),
+            .message = try alloc.dupe(u8, self.message),
         } };
     }
 
@@ -168,7 +261,7 @@ pub const Nil = struct {
     }
 
     fn clone(self: @This(), _: std.mem.Allocator) !Object {
-        return .{ .nil = self.* };
+        return .{ .nil = self };
     }
 
     fn deinit(_: @This(), _: std.mem.Allocator) void {}
