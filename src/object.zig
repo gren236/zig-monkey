@@ -13,6 +13,7 @@ pub const ObjectType = enum {
     func,
     string,
     builtin,
+    array,
 };
 
 pub const Object = union(ObjectType) {
@@ -25,6 +26,7 @@ pub const Object = union(ObjectType) {
     func: Function,
     string: String,
     builtin: Builtin,
+    array: Array,
 
     pub fn inspect(self: Object, out: *std.Io.Writer) anyerror!void {
         return switch (self) {
@@ -55,6 +57,7 @@ pub const Object = union(ObjectType) {
             .func => "FUNCTION",
             .string => "STRING",
             .builtin => "BUILTIN",
+            .array => "ARRAY",
         };
     }
 };
@@ -280,6 +283,41 @@ pub const Builtin = struct {
 
     fn inspect(_: @This(), out: *std.Io.Writer) !void {
         _ = try out.write("builtin function");
+    }
+};
+
+pub const Array = struct {
+    elements: []Object,
+
+    pub fn init(alloc: std.mem.Allocator, elements: []Object) !Array {
+        var new_elems = try alloc.alloc(Object, elements.len);
+        for (0.., elements) |i, obj| {
+            new_elems[i] = try obj.clone(alloc);
+        }
+
+        return .{
+            .elements = new_elems,
+        };
+    }
+
+    fn inspect(self: @This(), out: *std.Io.Writer) !void {
+        _ = try out.write("[");
+        for (0.., self.elements) |i, obj| {
+            if (i != 0) _ = try out.write(", ");
+            try obj.inspect(out);
+        }
+        _ = try out.write("]");
+    }
+
+    fn clone(self: @This(), alloc: std.mem.Allocator) !Object {
+        return .{ .array = try Array.init(alloc, self.elements) };
+    }
+
+    fn deinit(self: @This(), alloc: std.mem.Allocator) void {
+        for (self.elements) |obj| {
+            obj.deinit(alloc);
+        }
+        alloc.free(self.elements);
     }
 };
 

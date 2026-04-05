@@ -118,14 +118,27 @@ fn evalExpression(alloc: std.mem.Allocator, node: *const ast.Node(.Expression), 
             if (isError(func)) return func;
 
             const args = try evalExpressions(alloc, call_exp.arguments, env);
-            if (args.len == 1 and isError(args[0])) {
-                return args[0];
-            }
+            if (args.len == 1 and isError(args[0])) return args[0];
 
             return try applyFunction(alloc, func, args);
         },
         .string_literal => |str_lit| return object.Object{
             .string = try object.String.init(alloc, str_lit.value),
+        },
+        .array_literal => |array_exp| {
+            const elems = try evalExpressions(alloc, array_exp.elements, env);
+            if (elems.len == 1 and isError(elems[0])) return elems[0];
+
+            return object.Object{ .array = try .init(alloc, elems) };
+        },
+        .index_exp => |idx_exp| {
+            const left = try evalExpression(alloc, idx_exp.left, env);
+            if (isError(left)) return left;
+
+            const index = try evalExpression(alloc, idx_exp.index, env);
+            if (isError(index)) return index;
+
+            return try evalIndexExpression(alloc, left, index);
         },
     }
 }
@@ -342,6 +355,23 @@ fn evalIfExpression(alloc: std.mem.Allocator, ie: ast.IfExpression, env: *object
     } else {
         return nil_obj;
     }
+}
+
+fn evalIndexExpression(alloc: std.mem.Allocator, left: object.Object, index: object.Object) !object.Object {
+    if (@as(object.ObjectType, left) != .array or @as(object.ObjectType, index) != .integer)
+        return newError(alloc, "index operator not supported: {s}", .{left.tagName()});
+
+    return try evalArrayIndexExpression(left, index);
+}
+
+fn evalArrayIndexExpression(array: object.Object, index: object.Object) !object.Object {
+    const arrObj = array.array;
+    const idx = index.integer.value;
+    const max = arrObj.elements.len - 1;
+
+    if (idx < 0 or idx > max) return nil_obj;
+
+    return arrObj.elements[@intCast(idx)];
 }
 
 fn isTruthy(obj: object.Object) bool {
@@ -681,6 +711,59 @@ test "builtin functions" {
         switch (t.expected) {
             .int => |exp| try testIntegerObject(evaluated, exp),
             .err => |msg| try std.testing.expectEqualStrings(msg, evaluated.err.message),
+        }
+    }
+}
+
+test "array literal" {
+    const input = "[1, 2 * 2, 3 + 3]";
+
+    const talloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(talloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var env = try object.Environment.init(talloc);
+    defer env.deinit(talloc);
+
+    const evaluated = try testEvalWithEnv(alloc, input, &env);
+    try std.testing.expectEqual(3, evaluated.array.elements.len);
+    try testIntegerObject(evaluated.array.elements[0], 1);
+    try testIntegerObject(evaluated.array.elements[1], 4);
+    try testIntegerObject(evaluated.array.elements[2], 6);
+}
+
+test "array index expressions" {
+    const talloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(talloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const tests = [_]struct {
+        input: []const u8,
+        expected: ?i64,
+    }{
+        .{ .input = "[1, 2, 3][0]", .expected = 1 },
+        .{ .input = "[1, 2, 3][1]", .expected = 2 },
+        .{ .input = "[1, 2, 3][2]", .expected = 3 },
+        .{ .input = "let i = 0; [1][i];", .expected = 1 },
+        .{ .input = "[1, 2, 3][1 + 1];", .expected = 3 },
+        .{ .input = "let myArray = [1, 2, 3]; myArray[2];", .expected = 3 },
+        .{ .input = "let myArray = [1, 2, 3]; myArray[0] + myArray[1] + myArray[2];", .expected = 6 },
+        .{ .input = "let myArray = [1, 2, 3]; let i = myArray[0]; myArray[i]", .expected = 2 },
+        .{ .input = "[1, 2, 3][3]", .expected = null },
+        .{ .input = "[1, 2, 3][-1]", .expected = null },
+    };
+
+    for (tests) |t| {
+        var env = try object.Environment.init(talloc);
+        defer env.deinit(talloc);
+
+        const evaluated = try testEvalWithEnv(alloc, t.input, &env);
+        if (t.expected) |exp| {
+            try testIntegerObject(evaluated, exp);
+        } else {
+            try testNilObject(evaluated);
         }
     }
 }

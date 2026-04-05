@@ -20,6 +20,7 @@ inline fn getPrefixParseFnFromNodeType(token_type: Lexer.TokenType) !PrefixParse
         .IF => parseIfExpression,
         .FUNCTION => parseFunctionLiteral,
         .STRING => parseStringLiteral,
+        .LBRACKET => parseArrayLiteral,
         else => error.UnrecognisedTokenType,
     };
 }
@@ -28,6 +29,7 @@ inline fn getInfixParseFnFromNodeType(token_type: Lexer.TokenType) !InfixParseFn
     return switch (token_type) {
         .PLUS, .MINUS, .SLASH, .ASTERISK, .EQ, .NOT_EQ, .LT, .GT => parseInfixExpression,
         .LPAREN => parseCallExpression,
+        .LBRACKET => parseIndexExpression,
         else => error.UnrecognisedTokenType,
     };
 }
@@ -179,6 +181,7 @@ const Precedence = enum {
     product, // *
     prefix, // -X or !X
     call, // myFunction(X)
+    index, // array[index]
 };
 
 inline fn getPrecedenceByTokenType(tok_type: Lexer.TokenType) Precedence {
@@ -188,6 +191,7 @@ inline fn getPrecedenceByTokenType(tok_type: Lexer.TokenType) Precedence {
         .PLUS, .MINUS => .sum,
         .SLASH, .ASTERISK => .product,
         .LPAREN => .call,
+        .LBRACKET => .index,
         else => .lowest,
     };
 }
@@ -290,15 +294,35 @@ fn parseCallExpression(self: *@This(), alloc: std.mem.Allocator, function: ast.N
             alloc,
             self.cur_token,
             function,
-            try self.parseCallArguments(alloc),
+            try self.parseExpressionList(alloc, .RPAREN),
         ),
     } };
 }
 
-fn parseCallArguments(self: *@This(), alloc: std.mem.Allocator) ![]ast.Node(.Expression) {
+fn parseIndexExpression(self: *@This(), alloc: std.mem.Allocator, left: ast.Node(.Expression)) !ast.Node(.Expression) {
+    const start_tok = self.cur_token;
+
+    self.nextToken();
+
+    var index = try self.parseExpression(alloc, .lowest);
+    errdefer index.deinit(alloc);
+
+    if (!try self.expectPeek(alloc, .RBRACKET)) return error.ParseError;
+
+    return ast.Node(.Expression){ .val = .{
+        .index_exp = try ast.IndexExpression.init(
+            alloc,
+            start_tok,
+            left,
+            index,
+        ),
+    } };
+}
+
+fn parseExpressionList(self: *@This(), alloc: std.mem.Allocator, end: Lexer.TokenType) ![]ast.Node(.Expression) {
     var args = std.ArrayList(ast.Node(.Expression)).empty;
 
-    if (self.peek_token.token_type == .RPAREN) {
+    if (self.peek_token.token_type == end) {
         self.nextToken();
         return try args.toOwnedSlice(alloc);
     }
@@ -315,7 +339,7 @@ fn parseCallArguments(self: *@This(), alloc: std.mem.Allocator) ![]ast.Node(.Exp
         try args.append(alloc, try self.parseExpression(alloc, .lowest));
     }
 
-    if (!try self.expectPeek(alloc, .RPAREN)) return error.ParseError;
+    if (!try self.expectPeek(alloc, end)) return error.ParseError;
 
     return try args.toOwnedSlice(alloc);
 }
@@ -397,6 +421,15 @@ fn parseStringLiteral(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expre
             self.cur_token,
             self.cur_token.literal,
         ),
+    } };
+}
+
+fn parseArrayLiteral(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expression) {
+    return ast.Node(.Expression){ .val = .{
+        .array_literal = .{
+            .token = self.cur_token,
+            .elements = try self.parseExpressionList(alloc, .RBRACKET),
+        },
     } };
 }
 
@@ -839,6 +872,56 @@ test "string literal expression" {
     try std.testing.expectEqualStrings("hello world", literal.value);
 }
 
+test "array literal" {
+    const input = "[1, 2 * 2, 3 + 3]";
+
+    const alloc = std.testing.allocator;
+
+    var l = Lexer.init(input);
+    var p = init(&l);
+    defer p.deinit(alloc);
+
+    var program = try p.parseProgram(alloc);
+    defer program.deinit(alloc);
+
+    try checkParserErrors(&p);
+    try std.testing.expectEqual(1, program.statements.len);
+
+    const literal = program.statements[0].val.expression_stmt.expression.val.array_literal;
+    try std.testing.expectEqual(3, literal.elements.len);
+
+    try testIntegerLiteral(&literal.elements[0], 1);
+    try testIntegerLiteral(literal.elements[1].val.infix.left, 2);
+    try std.testing.expectEqualStrings("*", literal.elements[1].val.infix.operator);
+    try testIntegerLiteral(literal.elements[1].val.infix.right, 2);
+    try testIntegerLiteral(literal.elements[2].val.infix.left, 3);
+    try std.testing.expectEqualStrings("+", literal.elements[2].val.infix.operator);
+    try testIntegerLiteral(literal.elements[2].val.infix.right, 3);
+}
+
+test "index expression" {
+    const input = "myArray[1 + 1]";
+
+    const alloc = std.testing.allocator;
+
+    var l = Lexer.init(input);
+    var p = init(&l);
+    defer p.deinit(alloc);
+
+    var program = try p.parseProgram(alloc);
+    defer program.deinit(alloc);
+
+    try checkParserErrors(&p);
+    try std.testing.expectEqual(1, program.statements.len);
+
+    const index_exp = program.statements[0].val.expression_stmt.expression.val.index_exp;
+    try std.testing.expectEqualStrings("myArray", index_exp.left.val.ident.value);
+    const index_infix = index_exp.index.val.infix;
+    try testIntegerLiteral(index_infix.left, 1);
+    try std.testing.expectEqualStrings("+", index_infix.operator);
+    try testIntegerLiteral(index_infix.right, 1);
+}
+
 test "operator precedence" {
     const alloc = std.testing.allocator;
 
@@ -941,6 +1024,14 @@ test "operator precedence" {
         .{
             .input = "add(a + b + c * d / f + g)",
             .expected = "add((((a + b) + ((c * d) / f)) + g))",
+        },
+        .{
+            .input = "a * [1, 2, 3, 4][b * c] * d",
+            .expected = "((a * ([1, 2, 3, 4][(b * c)])) * d)",
+        },
+        .{
+            .input = "add(a * b[2], b[1], 2 * [1, 2][1])",
+            .expected = "add((a * (b[2])), (b[1]), (2 * ([1, 2][1])))",
         },
     };
 

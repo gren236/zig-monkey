@@ -29,6 +29,8 @@ pub const ExpressionNode = union(enum) {
     fn_literal: FunctionLiteral,
     call_exp: CallExpression,
     string_literal: StringLiteral,
+    array_literal: ArrayLiteral,
+    index_exp: IndexExpression,
 };
 
 pub fn Node(comptime T: NodeType) type {
@@ -691,6 +693,103 @@ pub const StringLiteral = struct {
 
     pub fn writeString(self: StringLiteral, writer: *std.Io.Writer) !void {
         _ = try writer.write(self.token.literal);
+    }
+};
+
+pub const ArrayLiteral = struct {
+    token: Lexer.Token,
+    elements: []Node(.Expression),
+
+    pub fn deinit(self: ArrayLiteral, alloc: std.mem.Allocator) void {
+        for (self.elements) |elem| {
+            elem.deinit(alloc);
+        }
+        alloc.free(self.elements);
+    }
+
+    pub fn clone(self: ArrayLiteral, alloc: std.mem.Allocator) !Node(.Expression) {
+        var new = ArrayLiteral{
+            .token = self.token,
+            .elements = try alloc.alloc(Node(.Expression), self.elements.len),
+        };
+
+        for (0.., self.elements) |i, elem| {
+            new.elements[i] = try elem.clone(alloc);
+        }
+
+        return .{ .val = .{ .array_literal = new } };
+    }
+
+    pub fn tokenLiteral(self: ArrayLiteral) []const u8 {
+        return self.token.literal;
+    }
+
+    pub fn writeString(self: ArrayLiteral, writer: *std.Io.Writer) !void {
+        _ = try writer.write("[");
+
+        for (0.., self.elements) |i, elem| {
+            if (i != 0) _ = try writer.write(", ");
+            try elem.writeString(writer);
+        }
+
+        _ = try writer.write("]");
+    }
+};
+
+pub const IndexExpression = struct {
+    token: Lexer.Token,
+    left: *const Node(.Expression),
+    index: *const Node(.Expression),
+
+    pub fn init(alloc: std.mem.Allocator, tok: Lexer.Token, left: Node(.Expression), index: Node(.Expression)) !IndexExpression {
+        const left_ptr = try alloc.create(Node(.Expression));
+        left_ptr.* = left;
+
+        const index_ptr = try alloc.create(Node(.Expression));
+        index_ptr.* = index;
+
+        return .{
+            .token = tok,
+            .left = left_ptr,
+            .index = index_ptr,
+        };
+    }
+
+    pub fn deinit(self: IndexExpression, alloc: std.mem.Allocator) void {
+        self.left.deinit(alloc);
+        alloc.destroy(self.left);
+        self.index.deinit(alloc);
+        alloc.destroy(self.index);
+    }
+
+    pub fn clone(self: IndexExpression, alloc: std.mem.Allocator) !Node(.Expression) {
+        var new = IndexExpression{
+            .token = self.token,
+            .left = undefined,
+            .index = undefined,
+        };
+
+        const new_left = try alloc.create(Node(.Expression));
+        new_left.* = try self.left.clone(alloc);
+        new.left = new_left;
+
+        const new_index = try alloc.create(Node(.Expression));
+        new_index.* = try self.index.clone(alloc);
+        new.index = new_index;
+
+        return .{ .val = .{ .index_exp = new } };
+    }
+
+    pub fn tokenLiteral(self: IndexExpression) []const u8 {
+        return self.token.literal;
+    }
+
+    pub fn writeString(self: IndexExpression, writer: *std.Io.Writer) !void {
+        _ = try writer.write("(");
+        try self.left.writeString(writer);
+        _ = try writer.write("[");
+        try self.index.writeString(writer);
+        _ = try writer.write("])");
     }
 };
 

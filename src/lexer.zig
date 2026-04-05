@@ -40,6 +40,8 @@ pub const TokenType = enum {
     RPAREN,
     LBRACE,
     RBRACE,
+    LBRACKET,
+    RBRACKET,
 
     // Keywords
     FUNCTION,
@@ -180,6 +182,8 @@ pub fn nextToken(self: *@This()) Token {
         '{' => Token{ .token_type = TokenType.LBRACE, .literal = self.getCurrentCharString() },
         '}' => Token{ .token_type = TokenType.RBRACE, .literal = self.getCurrentCharString() },
         '"' => Token{ .token_type = TokenType.STRING, .literal = self.readString() },
+        '[' => Token{ .token_type = TokenType.LBRACKET, .literal = self.getCurrentCharString() },
+        ']' => Token{ .token_type = TokenType.RBRACKET, .literal = self.getCurrentCharString() },
         0 => Token{ .token_type = TokenType.EOF, .literal = "" },
         else => if (isLetter(self.ch)) {
             const tok_literal = self.readIdentifier();
@@ -219,6 +223,7 @@ test nextToken {
         \\ 10 != 9;
         \\ "foobar"
         \\ "foo bar"
+        \\ [1, 2];
     ;
 
     const tests = [_]struct {
@@ -300,6 +305,12 @@ test nextToken {
         .{ .expectedType = TokenType.SEMICOLON, .expectedLiteral = ";" },
         .{ .expectedType = TokenType.STRING, .expectedLiteral = "foobar" },
         .{ .expectedType = TokenType.STRING, .expectedLiteral = "foo bar" },
+        .{ .expectedType = TokenType.LBRACKET, .expectedLiteral = "[" },
+        .{ .expectedType = TokenType.INT, .expectedLiteral = "1" },
+        .{ .expectedType = TokenType.COMMA, .expectedLiteral = "," },
+        .{ .expectedType = TokenType.INT, .expectedLiteral = "2" },
+        .{ .expectedType = TokenType.RBRACKET, .expectedLiteral = "]" },
+        .{ .expectedType = TokenType.SEMICOLON, .expectedLiteral = ";" },
         .{ .expectedType = TokenType.EOF, .expectedLiteral = "" },
     };
 
