@@ -247,6 +247,11 @@ fn evalInfixExpression(
         };
     }
 
+    // special case if both sides are strings
+    if (@as(object.ObjectType, left) == .string and @as(object.ObjectType, right) == .string) {
+        return try evalStringInfixExpression(alloc, op, left, right);
+    }
+
     return try evalIntegerInfixExpression(alloc, op, left, right);
 }
 
@@ -271,6 +276,20 @@ fn evalIntegerInfixExpression(alloc: std.mem.Allocator, operator: Operator, left
             right.tagName(),
         }),
     }
+}
+
+fn evalStringInfixExpression(alloc: std.mem.Allocator, operator: Operator, left: object.Object, right: object.Object) !object.Object {
+    if (operator != .@"+") return try newError(
+        alloc,
+        "unknown operator: {s} {s} {s}",
+        .{ left.tagName(), @tagName(operator), right.tagName() },
+    );
+
+    const leftVal = left.string.value;
+    const rightVal = right.string.value;
+    return .{ .string = .{
+        .value = try std.mem.concat(alloc, u8, &[_][]const u8{ leftVal, rightVal }),
+    } };
 }
 
 fn evalIfExpression(alloc: std.mem.Allocator, ie: ast.IfExpression, env: *object.Environment) anyerror!object.Object {
@@ -457,6 +476,17 @@ test "string literal" {
     try std.testing.expectEqualStrings("Hello World!", evaluated.string.value);
 }
 
+test "string concatenation" {
+    const input = "\"Hello\" + \" \" + \"World!\"";
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const evaluated = try testEval(alloc, input);
+
+    try std.testing.expectEqualStrings("Hello World!", evaluated.string.value);
+}
+
 test "error handling" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -505,6 +535,10 @@ test "error handling" {
         .{
             .input = "foobar",
             .expected = "identifier not found: foobar",
+        },
+        .{
+            .input = "\"Hello\" - \"World\"",
+            .expected = "unknown operator: STRING - STRING",
         },
     };
 
