@@ -14,19 +14,80 @@ fn lenBuiltin(alloc: std.mem.Allocator, args: []object.Object) !object.Object {
 
     return switch (args[0]) {
         .string => |str| object.Object{ .integer = .{ .value = @intCast(str.value.len) } },
+        .array => |arr| object.Object{ .integer = .{ .value = @intCast(arr.elements.len) } },
         else => try newError(alloc, "argument to `len` not supported, got {s}", .{args[0].tagName()}),
     };
 }
 
+fn firstBuiltin(alloc: std.mem.Allocator, args: []object.Object) !object.Object {
+    if (args.len != 1) return try newError(alloc, "wrong number of arguments. got={d}, want=1", .{args.len});
+    if (@as(object.ObjectType, args[0]) != .array)
+        return try newError(alloc, "argument to `first` must be ARRAY, got {s}", .{args[0].tagName()});
+
+    const elems = args[0].array.elements;
+    if (elems.len > 0) return elems[0];
+
+    return nil_obj;
+}
+
+fn lastBuiltin(alloc: std.mem.Allocator, args: []object.Object) !object.Object {
+    if (args.len != 1) return try newError(alloc, "wrong number of arguments. got={d}, want=1", .{args.len});
+    if (@as(object.ObjectType, args[0]) != .array)
+        return try newError(alloc, "argument to `last` must be ARRAY, got {s}", .{args[0].tagName()});
+
+    const elems = args[0].array.elements;
+    if (elems.len > 0) return elems[elems.len - 1];
+
+    return nil_obj;
+}
+
+fn restBuiltin(alloc: std.mem.Allocator, args: []object.Object) !object.Object {
+    if (args.len != 1) return try newError(alloc, "wrong number of arguments. got={d}, want=1", .{args.len});
+    if (@as(object.ObjectType, args[0]) != .array)
+        return try newError(alloc, "argument to `rest` must be ARRAY, got {s}", .{args[0].tagName()});
+
+    const elems = args[0].array.elements;
+    if (elems.len > 0) {
+        return object.Object{ .array = try object.Array.init(alloc, elems[1..]) };
+    }
+
+    return nil_obj;
+}
+
+fn pushBuiltin(alloc: std.mem.Allocator, args: []object.Object) !object.Object {
+    if (args.len != 2) return try newError(alloc, "wrong number of arguments. got={d}, want=2", .{args.len});
+    if (@as(object.ObjectType, args[0]) != .array)
+        return try newError(alloc, "argument to `push` must be ARRAY, got {s}", .{args[0].tagName()});
+
+    const elems = args[0].array.elements;
+    return .{ .array = .{
+        .elements = try std.mem.concat(
+            alloc,
+            object.Object,
+            &[2][]const object.Object{ elems, &[_]object.Object{args[1]} },
+        ),
+    } };
+}
+
 const BuiltinFnIdent = enum {
     len,
+    first,
+    last,
+    rest,
+    push,
 
     fn getObject(ident: []const u8) ?object.Object {
         const ident_name = std.meta.stringToEnum(@This(), ident) orelse return null;
 
-        return switch (ident_name) {
-            .len => object.Object{ .builtin = .{ .func = lenBuiltin } },
-        };
+        return object.Object{ .builtin = .{
+            .func = switch (ident_name) {
+                .len => lenBuiltin,
+                .first => firstBuiltin,
+                .last => lastBuiltin,
+                .rest => restBuiltin,
+                .push => pushBuiltin,
+            },
+        } };
     }
 };
 
@@ -693,12 +754,20 @@ test "builtin functions" {
         input: []const u8,
         expected: union(enum) {
             int: i64,
+            arr: []const i64,
             err: []const u8,
         },
     }{
         .{ .input = "len(\"\")", .expected = .{ .int = 0 } },
         .{ .input = "len(\"four\")", .expected = .{ .int = 4 } },
         .{ .input = "len(\"hello world\")", .expected = .{ .int = 11 } },
+        .{ .input = "len([1, 2, 3])", .expected = .{ .int = 3 } },
+        .{ .input = "first([3, 2, 1])", .expected = .{ .int = 3 } },
+        .{ .input = "last([1, 3, 2 * 2])", .expected = .{ .int = 4 } },
+        .{ .input = "last([3])", .expected = .{ .int = 3 } },
+        .{ .input = "rest([1, 2, 3, 4])", .expected = .{ .arr = &[_]i64{ 2, 3, 4 } } },
+        .{ .input = "rest(rest([1, 2, 3, 4]))", .expected = .{ .arr = &[_]i64{ 3, 4 } } },
+        .{ .input = "push([1, 2, 3, 4], 5)", .expected = .{ .arr = &[_]i64{ 1, 2, 3, 4, 5 } } },
         .{ .input = "len(1)", .expected = .{ .err = "argument to `len` not supported, got INTEGER" } },
         .{ .input = "len(\"one\", \"two\")", .expected = .{ .err = "wrong number of arguments. got=2, want=1" } },
     };
@@ -710,6 +779,11 @@ test "builtin functions" {
         const evaluated = try testEvalWithEnv(alloc, t.input, &env);
         switch (t.expected) {
             .int => |exp| try testIntegerObject(evaluated, exp),
+            .arr => |arr| {
+                for (evaluated.array.elements, arr) |obj, expected| {
+                    try testIntegerObject(obj, expected);
+                }
+            },
             .err => |msg| try std.testing.expectEqualStrings(msg, evaluated.err.message),
         }
     }
