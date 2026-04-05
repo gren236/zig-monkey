@@ -28,6 +28,7 @@ pub const ExpressionNode = union(enum) {
     if_exp: IfExpression,
     fn_literal: FunctionLiteral,
     call_exp: CallExpression,
+    string_literal: StringLiteral,
 };
 
 pub fn Node(comptime T: NodeType) type {
@@ -657,6 +658,39 @@ pub const CallExpression = struct {
         }
 
         _ = try writer.write(")");
+    }
+};
+
+pub const StringLiteral = struct {
+    token: Lexer.Token,
+    value: []const u8,
+
+    pub fn init(alloc: std.mem.Allocator, tok: Lexer.Token, val: []const u8) !StringLiteral {
+        return .{
+            .token = tok,
+            .value = try alloc.dupe(u8, val),
+        };
+    }
+
+    pub fn deinit(self: StringLiteral, alloc: std.mem.Allocator) void {
+        alloc.free(self.value);
+    }
+
+    pub fn clone(self: StringLiteral, alloc: std.mem.Allocator) !Node(.Expression) {
+        return .{ .val = .{
+            .string_literal = .{
+                .token = self.token,
+                .value = try alloc.dupe(u8, self.value),
+            },
+        } };
+    }
+
+    pub fn tokenLiteral(self: StringLiteral) []const u8 {
+        return self.token.literal;
+    }
+
+    pub fn writeString(self: StringLiteral, writer: *std.Io.Writer) !void {
+        _ = try writer.write(self.token.literal);
     }
 };
 

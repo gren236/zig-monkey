@@ -19,6 +19,7 @@ inline fn getPrefixParseFnFromNodeType(token_type: Lexer.TokenType) !PrefixParse
         .LPAREN => parseGroupedExpression,
         .IF => parseIfExpression,
         .FUNCTION => parseFunctionLiteral,
+        .STRING => parseStringLiteral,
         else => error.UnrecognisedTokenType,
     };
 }
@@ -385,6 +386,16 @@ fn parseFunctionLiteral(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Exp
             lit_tok,
             params,
             body,
+        ),
+    } };
+}
+
+fn parseStringLiteral(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expression) {
+    return ast.Node(.Expression){ .val = .{
+        .string_literal = try ast.StringLiteral.init(
+            alloc,
+            self.cur_token,
+            self.cur_token.literal,
         ),
     } };
 }
@@ -807,6 +818,25 @@ test "call expression" {
     try std.testing.expectEqualStrings("4", arg3_infix.left.tokenLiteral());
     try std.testing.expectEqualStrings("+", arg3_infix.operator);
     try std.testing.expectEqualStrings("5", arg3_infix.right.tokenLiteral());
+}
+
+test "string literal expression" {
+    const input = "\"hello world\"";
+
+    const alloc = std.testing.allocator;
+
+    var l = Lexer.init(input);
+    var p = init(&l);
+    defer p.deinit(alloc);
+
+    var program = try p.parseProgram(alloc);
+    defer program.deinit(alloc);
+
+    try checkParserErrors(&p);
+    try std.testing.expectEqual(1, program.statements.len);
+
+    const literal = program.statements[0].val.expression_stmt.expression.val.string_literal;
+    try std.testing.expectEqualStrings("hello world", literal.value);
 }
 
 test "operator precedence" {

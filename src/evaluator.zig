@@ -103,6 +103,9 @@ fn evalExpression(alloc: std.mem.Allocator, node: *const ast.Node(.Expression), 
 
             return try applyFunction(alloc, func, args);
         },
+        .string_literal => |str_lit| return object.Object{
+            .string = try object.String.init(alloc, str_lit.value),
+        },
     }
 }
 
@@ -125,6 +128,7 @@ fn applyFunction(alloc: std.mem.Allocator, func: object.Object, args: []object.O
 
     var extended_env = try extendFunctionEnv(function, args);
     defer extended_env.deinit(extended_env.alloc);
+
     const evaluated = try evalStatement(
         alloc,
         &ast.Node(.Statement){ .val = .{
@@ -440,6 +444,17 @@ test "return statements" {
         const evaluated = try testEval(alloc, t.input);
         try testIntegerObject(evaluated, t.expected);
     }
+}
+
+test "string literal" {
+    const input = "\"Hello World!\"";
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const evaluated = try testEval(alloc, input);
+
+    try std.testing.expectEqualStrings("Hello World!", evaluated.string.value);
 }
 
 test "error handling" {

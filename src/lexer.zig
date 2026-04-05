@@ -17,6 +17,7 @@ pub const TokenType = enum {
     // Identifiers + literals
     IDENT,
     INT,
+    STRING,
 
     // Operators
     ASSIGN,
@@ -137,6 +138,17 @@ fn readNumber(self: *@This()) []const u8 {
     return self.input[start_pos..self.position];
 }
 
+fn readString(self: *@This()) []const u8 {
+    const start_pos = self.position + 1;
+    self.readChar();
+
+    while (self.ch != '"' and self.ch != 0) {
+        self.readChar();
+    }
+
+    return self.input[start_pos..self.position];
+}
+
 pub fn nextToken(self: *@This()) Token {
     self.skipWhitespace();
 
@@ -167,6 +179,7 @@ pub fn nextToken(self: *@This()) Token {
         ',' => Token{ .token_type = TokenType.COMMA, .literal = self.getCurrentCharString() },
         '{' => Token{ .token_type = TokenType.LBRACE, .literal = self.getCurrentCharString() },
         '}' => Token{ .token_type = TokenType.RBRACE, .literal = self.getCurrentCharString() },
+        '"' => Token{ .token_type = TokenType.STRING, .literal = self.readString() },
         0 => Token{ .token_type = TokenType.EOF, .literal = "" },
         else => if (isLetter(self.ch)) {
             const tok_literal = self.readIdentifier();
@@ -204,6 +217,8 @@ test nextToken {
         \\
         \\ 10 == 10;
         \\ 10 != 9;
+        \\ "foobar"
+        \\ "foo bar"
     ;
 
     const tests = [_]struct {
@@ -283,6 +298,8 @@ test nextToken {
         .{ .expectedType = TokenType.NOT_EQ, .expectedLiteral = "!=" },
         .{ .expectedType = TokenType.INT, .expectedLiteral = "9" },
         .{ .expectedType = TokenType.SEMICOLON, .expectedLiteral = ";" },
+        .{ .expectedType = TokenType.STRING, .expectedLiteral = "foobar" },
+        .{ .expectedType = TokenType.STRING, .expectedLiteral = "foo bar" },
         .{ .expectedType = TokenType.EOF, .expectedLiteral = "" },
     };
 

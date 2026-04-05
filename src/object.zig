@@ -9,6 +9,7 @@ pub const ObjectType = enum {
     err,
     env,
     func,
+    string,
 };
 
 pub const Object = union(ObjectType) {
@@ -19,6 +20,7 @@ pub const Object = union(ObjectType) {
     err: Error,
     env: Environment,
     func: Function,
+    string: String,
 
     pub fn inspect(self: Object, out: *std.Io.Writer) anyerror!void {
         return switch (self) {
@@ -47,6 +49,7 @@ pub const Object = union(ObjectType) {
             .err => "ERROR",
             .env => "ENVIRONMENT",
             .func => "FUNCTION",
+            .string => "STRING",
         };
     }
 };
@@ -234,6 +237,30 @@ pub const Function = struct {
         self.body.deinit(alloc);
         self.env.deinit(alloc);
         alloc.destroy(self.env);
+    }
+};
+
+pub const String = struct {
+    value: []const u8,
+
+    pub fn init(alloc: std.mem.Allocator, value: []const u8) !String {
+        return .{
+            .value = try alloc.dupe(u8, value),
+        };
+    }
+
+    fn clone(self: @This(), alloc: std.mem.Allocator) !Object {
+        return .{ .string = .{
+            .value = try alloc.dupe(u8, self.value),
+        } };
+    }
+
+    fn deinit(self: @This(), alloc: std.mem.Allocator) void {
+        alloc.free(self.value);
+    }
+
+    fn inspect(self: @This(), out: *std.Io.Writer) !void {
+        _ = try out.write(self.value);
     }
 };
 
