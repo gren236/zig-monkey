@@ -9,6 +9,27 @@ const true_obj = object.Object{ .boolean = .{ .value = true } };
 const false_obj = object.Object{ .boolean = .{ .value = false } };
 const nil_obj = object.Object{ .nil = .{} };
 
+fn lenBuiltin(alloc: std.mem.Allocator, args: []object.Object) !object.Object {
+    if (args.len != 1) return try newError(alloc, "wrong number of arguments. got={d}, want=1", .{args.len});
+
+    return switch (args[0]) {
+        .string => |str| object.Object{ .integer = .{ .value = @intCast(str.value.len) } },
+        else => try newError(alloc, "argument to `len` not supported, got {s}", .{args[0].tagName()}),
+    };
+}
+
+const BuiltinFnIdent = enum {
+    len,
+
+    fn getObject(ident: []const u8) ?object.Object {
+        const ident_name = std.meta.stringToEnum(@This(), ident) orelse return null;
+
+        return switch (ident_name) {
+            .len => object.Object{ .builtin = .{ .func = lenBuiltin } },
+        };
+    }
+};
+
 fn newError(alloc: std.mem.Allocator, comptime format: []const u8, args: anytype) !object.Object {
     return object.Object{
         .err = .{ .message = try std.fmt.allocPrint(alloc, format, args) },
@@ -123,21 +144,28 @@ fn evalExpressions(alloc: std.mem.Allocator, exps: []ast.Node(.Expression), env:
 }
 
 fn applyFunction(alloc: std.mem.Allocator, func: object.Object, args: []object.Object) !object.Object {
-    if (@as(object.ObjectType, func) != .func) return newError(alloc, "not a function: {s}", .{func.tagName()});
-    const function = func.func;
+    switch (func) {
+        .func => {
+            const function = func.func;
 
-    var extended_env = try extendFunctionEnv(function, args);
-    defer extended_env.deinit(extended_env.alloc);
+            var extended_env = try extendFunctionEnv(function, args);
+            defer extended_env.deinit(extended_env.alloc);
 
-    const evaluated = try evalStatement(
-        alloc,
-        &ast.Node(.Statement){ .val = .{
-            .block_stmt = function.body,
-        } },
-        &extended_env,
-    );
+            const evaluated = try evalStatement(
+                alloc,
+                &ast.Node(.Statement){ .val = .{
+                    .block_stmt = function.body,
+                } },
+                &extended_env,
+            );
 
-    return unwrapReturnValue(evaluated);
+            return unwrapReturnValue(evaluated);
+        },
+        .builtin => |builtin| {
+            return try builtin.func(alloc, args);
+        },
+        else => return newError(alloc, "not a function: {s}", .{func.tagName()}),
+    }
 }
 
 fn extendFunctionEnv(func: object.Function, args: []object.Object) !object.Environment {
@@ -172,7 +200,10 @@ fn evalBlockStatements(alloc: std.mem.Allocator, block: ast.BlockStatement, env:
 }
 
 fn evalIdentifier(alloc: std.mem.Allocator, node: ast.Identifier, env: *object.Environment) !object.Object {
-    return env.get(node.value) orelse newError(alloc, "identifier not found: {s}", .{node.value});
+    if (env.get(node.value)) |obj| return obj;
+    if (BuiltinFnIdent.getObject(node.value)) |obj| return obj;
+
+    return newError(alloc, "identifier not found: {s}", .{node.value});
 }
 
 const Operator = enum {
@@ -619,6 +650,38 @@ test "function application" {
 
         const evaluated = try testEvalWithEnv(alloc, t.input, &env);
         try testIntegerObject(evaluated, t.expected);
+    }
+}
+
+test "builtin functions" {
+    const talloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(talloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const tests = [_]struct {
+        input: []const u8,
+        expected: union(enum) {
+            int: i64,
+            err: []const u8,
+        },
+    }{
+        .{ .input = "len(\"\")", .expected = .{ .int = 0 } },
+        .{ .input = "len(\"four\")", .expected = .{ .int = 4 } },
+        .{ .input = "len(\"hello world\")", .expected = .{ .int = 11 } },
+        .{ .input = "len(1)", .expected = .{ .err = "argument to `len` not supported, got INTEGER" } },
+        .{ .input = "len(\"one\", \"two\")", .expected = .{ .err = "wrong number of arguments. got=2, want=1" } },
+    };
+
+    for (tests) |t| {
+        var env = try object.Environment.init(talloc);
+        defer env.deinit(talloc);
+
+        const evaluated = try testEvalWithEnv(alloc, t.input, &env);
+        switch (t.expected) {
+            .int => |exp| try testIntegerObject(evaluated, exp),
+            .err => |msg| try std.testing.expectEqualStrings(msg, evaluated.err.message),
+        }
     }
 }
 

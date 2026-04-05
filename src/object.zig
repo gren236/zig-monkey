@@ -1,6 +1,8 @@
 const std = @import("std");
 const ast = @import("ast.zig");
 
+const BuiltinFunction = *const fn (alloc: std.mem.Allocator, args: []Object) anyerror!Object;
+
 pub const ObjectType = enum {
     integer,
     boolean,
@@ -10,6 +12,7 @@ pub const ObjectType = enum {
     env,
     func,
     string,
+    builtin,
 };
 
 pub const Object = union(ObjectType) {
@@ -21,6 +24,7 @@ pub const Object = union(ObjectType) {
     env: Environment,
     func: Function,
     string: String,
+    builtin: Builtin,
 
     pub fn inspect(self: Object, out: *std.Io.Writer) anyerror!void {
         return switch (self) {
@@ -50,6 +54,7 @@ pub const Object = union(ObjectType) {
             .env => "ENVIRONMENT",
             .func => "FUNCTION",
             .string => "STRING",
+            .builtin => "BUILTIN",
         };
     }
 };
@@ -261,6 +266,20 @@ pub const String = struct {
 
     fn inspect(self: @This(), out: *std.Io.Writer) !void {
         _ = try out.write(self.value);
+    }
+};
+
+pub const Builtin = struct {
+    func: BuiltinFunction,
+
+    fn clone(self: @This(), _: std.mem.Allocator) !Object {
+        return .{ .builtin = self };
+    }
+
+    fn deinit(_: @This(), _: std.mem.Allocator) void {}
+
+    fn inspect(_: @This(), out: *std.Io.Writer) !void {
+        _ = try out.write("builtin function");
     }
 };
 
