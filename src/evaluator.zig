@@ -420,10 +420,14 @@ fn evalIfExpression(alloc: std.mem.Allocator, ie: ast.IfExpression, env: *object
 }
 
 fn evalIndexExpression(alloc: std.mem.Allocator, left: object.Object, index: object.Object) !object.Object {
-    if (@as(object.ObjectType, left) != .array or @as(object.ObjectType, index) != .integer)
-        return newError(alloc, "index operator not supported: {s}", .{left.tagName()});
-
-    return try evalArrayIndexExpression(left, index);
+    return switch (@as(object.ObjectType, left)) {
+        .array => if (@as(object.ObjectType, index) == .integer)
+            try evalArrayIndexExpression(left, index)
+        else
+            try newError(alloc, "index operator not supported: {s}", .{left.tagName()}),
+        .hash => try evalHashIndexExpression(alloc, left, index),
+        else => try newError(alloc, "index operator not supported: {s}", .{left.tagName()}),
+    };
 }
 
 fn evalArrayIndexExpression(array: object.Object, index: object.Object) !object.Object {
@@ -436,6 +440,15 @@ fn evalArrayIndexExpression(array: object.Object, index: object.Object) !object.
     return arrObj.elements[@intCast(idx)];
 }
 
+fn evalHashIndexExpression(alloc: std.mem.Allocator, hash: object.Object, index: object.Object) !object.Object {
+    const hashObj = hash.hash;
+    const key = index.toHashable() catch {
+        return try newError(alloc, "unusable as hash key: {s}", .{index.tagName()});
+    };
+
+    return hashObj.pairs.get(key) orelse nil_obj;
+}
+
 fn evalHashLiteral(alloc: std.mem.Allocator, node: ast.HashLiteral, env: *object.Environment) !object.Object {
     var pairs = object.HashMap.empty;
     errdefer pairs.deinit(alloc);
@@ -446,7 +459,7 @@ fn evalHashLiteral(alloc: std.mem.Allocator, node: ast.HashLiteral, env: *object
         if (isError(key)) return key;
         errdefer key.deinit(alloc);
 
-        const hashKey = key.toHashable();
+        const hashKey = try key.toHashable();
 
         var value = try evalExpression(alloc, entry.value_ptr, env);
         if (isError(value)) return value;
@@ -684,6 +697,10 @@ test "error handling" {
         .{
             .input = "\"Hello\" - \"World\"",
             .expected = "unknown operator: STRING - STRING",
+        },
+        .{
+            .input = "{\"name\": \"Monkey\"}[fn(x) { x }];",
+            .expected = "unusable as hash key: FUNCTION",
         },
     };
 
@@ -924,6 +941,38 @@ test "hash literal" {
         count += 1;
     }
     try std.testing.expectEqual(expected.len, count);
+}
+
+test "hash expressions" {
+    const talloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(talloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const tests = [_]struct {
+        input: []const u8,
+        expected: ?i64,
+    }{
+        .{ .input = "{\"foo\": 5}[\"foo\"]", .expected = 5 },
+        .{ .input = "{\"foo\": 5}[\"bar\"]", .expected = null },
+        .{ .input = "let key = \"foo\"; {\"foo\": 5}[key]", .expected = 5 },
+        .{ .input = "{}[\"foo\"]", .expected = null },
+        .{ .input = "{5: 5}[5]", .expected = 5 },
+        .{ .input = "{true: 5}[true]", .expected = 5 },
+        .{ .input = "{false: 5}[false]", .expected = 5 },
+    };
+
+    for (tests) |t| {
+        var env = try object.Environment.init(talloc);
+        defer env.deinit(talloc);
+
+        const evaluated = try testEvalWithEnv(alloc, t.input, &env);
+        if (t.expected) |exp| {
+            try testIntegerObject(evaluated, exp);
+        } else {
+            try testNilObject(evaluated);
+        }
+    }
 }
 
 fn testNilObject(obj: object.Object) !void {

@@ -30,12 +30,12 @@ pub const Object = union(ObjectType) {
     array: Array,
     hash: Hash,
 
-    pub fn toHashable(self: Object) Hashable {
+    pub fn toHashable(self: Object) !Hashable {
         return switch (self) {
             .integer => |int| .{ .integer = int },
             .boolean => |obj| .{ .boolean = obj },
             .string => |str| .{ .string = str },
-            else => @panic("Object type not Hashable"),
+            else => error.NotHashable,
         };
     }
 
@@ -425,7 +425,7 @@ pub const Hash = struct {
         while (iter.next()) |entry| {
             try new.pairs.put(
                 alloc,
-                (try entry.key_ptr.toObject().clone(alloc)).toHashable(),
+                try (try entry.key_ptr.toObject().clone(alloc)).toHashable(),
                 try entry.value_ptr.clone(alloc),
             );
         }
