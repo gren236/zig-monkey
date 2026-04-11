@@ -201,6 +201,7 @@ fn evalExpression(alloc: std.mem.Allocator, node: *const ast.Node(.Expression), 
 
             return try evalIndexExpression(alloc, left, index);
         },
+        .hash_literal => |hash_lit| return try evalHashLiteral(alloc, hash_lit, env),
     }
 }
 
@@ -433,6 +434,28 @@ fn evalArrayIndexExpression(array: object.Object, index: object.Object) !object.
     if (idx < 0 or idx > max) return nil_obj;
 
     return arrObj.elements[@intCast(idx)];
+}
+
+fn evalHashLiteral(alloc: std.mem.Allocator, node: ast.HashLiteral, env: *object.Environment) !object.Object {
+    var pairs = object.HashMap.empty;
+    errdefer pairs.deinit(alloc);
+
+    var iter = node.pairs.iterator();
+    while (iter.next()) |entry| {
+        var key = try evalExpression(alloc, entry.key_ptr, env);
+        if (isError(key)) return key;
+        errdefer key.deinit(alloc);
+
+        const hashKey = key.toHashable();
+
+        var value = try evalExpression(alloc, entry.value_ptr, env);
+        if (isError(value)) return value;
+        errdefer value.deinit(alloc);
+
+        try pairs.put(alloc, hashKey, value);
+    }
+
+    return object.Object{ .hash = .{ .pairs = pairs } };
 }
 
 fn isTruthy(obj: object.Object) bool {
@@ -840,6 +863,67 @@ test "array index expressions" {
             try testNilObject(evaluated);
         }
     }
+}
+
+test "hash literal" {
+    const input =
+        \\let two = "two";
+        \\{
+        \\  "one": 10 - 9,
+        \\  two: 1 + 1,
+        \\  "thr" + "ee": 6 / 2,
+        \\  4: 4,
+        \\  true: 5,
+        \\  false: 6
+        \\}
+    ;
+
+    const talloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(talloc);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var env = try object.Environment.init(talloc);
+    defer env.deinit(talloc);
+
+    const evaluated = try testEvalWithEnv(alloc, input, &env);
+    const hash = evaluated.hash;
+    try std.testing.expectEqual(6, hash.pairs.size);
+
+    const expected = .{
+        .{ object.ObjectType.string, "one", 1 },
+        .{ object.ObjectType.string, "two", 2 },
+        .{ object.ObjectType.string, "three", 3 },
+        .{ object.ObjectType.integer, 4, 4 },
+        .{ object.ObjectType.boolean, true, 5 },
+        .{ object.ObjectType.boolean, false, 6 },
+    };
+
+    var iter = hash.pairs.iterator();
+    var count: usize = 0;
+    while (iter.next()) |entry| {
+        const key_obj = entry.key_ptr.toObject();
+        var found = false;
+
+        inline for (expected) |exp| {
+            const exp_type, const exp_key, const exp_val = exp;
+            if (@as(object.ObjectType, key_obj) == exp_type) {
+                const matches = switch (exp_type) {
+                    .string => std.mem.eql(u8, key_obj.string.value, exp_key),
+                    .integer => key_obj.integer.value == exp_key,
+                    .boolean => key_obj.boolean.value == exp_key,
+                    else => false,
+                };
+                if (matches) {
+                    try testIntegerObject(entry.value_ptr.*, exp_val);
+                    found = true;
+                }
+            }
+        }
+        try std.testing.expect(found);
+        count += 1;
+    }
+    try std.testing.expectEqual(expected.len, count);
 }
 
 fn testNilObject(obj: object.Object) !void {

@@ -14,6 +14,7 @@ pub const ObjectType = enum {
     string,
     builtin,
     array,
+    hash,
 };
 
 pub const Object = union(ObjectType) {
@@ -27,6 +28,16 @@ pub const Object = union(ObjectType) {
     string: String,
     builtin: Builtin,
     array: Array,
+    hash: Hash,
+
+    pub fn toHashable(self: Object) Hashable {
+        return switch (self) {
+            .integer => |int| .{ .integer = int },
+            .boolean => |obj| .{ .boolean = obj },
+            .string => |str| .{ .string = str },
+            else => @panic("Object type not Hashable"),
+        };
+    }
 
     pub fn inspect(self: Object, out: *std.Io.Writer) anyerror!void {
         return switch (self) {
@@ -58,6 +69,7 @@ pub const Object = union(ObjectType) {
             .string => "STRING",
             .builtin => "BUILTIN",
             .array => "ARRAY",
+            .hash => "HASH",
         };
     }
 };
@@ -74,20 +86,44 @@ pub const Integer = struct {
     }
 
     fn deinit(_: @This(), _: std.mem.Allocator) void {}
+
+    fn hashKey(self: @This()) u64 {
+        return @intCast(self.value);
+    }
+
+    fn eql(self: @This(), other: Hashable) bool {
+        return switch (other) {
+            .string => false,
+            .boolean => false,
+            .integer => |int| self.value == int.value,
+        };
+    }
 };
 
 pub const Boolean = struct {
     value: bool,
-
-    fn inspect(self: @This(), out: *std.Io.Writer) !void {
-        try out.print("{}", .{self.value});
-    }
 
     fn clone(self: @This(), _: std.mem.Allocator) !Object {
         return .{ .boolean = self };
     }
 
     fn deinit(_: @This(), _: std.mem.Allocator) void {}
+
+    fn inspect(self: @This(), out: *std.Io.Writer) !void {
+        try out.print("{}", .{self.value});
+    }
+
+    fn hashKey(self: @This()) u64 {
+        return @intFromBool(self.value);
+    }
+
+    fn eql(self: @This(), other: Hashable) bool {
+        return switch (other) {
+            .string => false,
+            .integer => false,
+            .boolean => |obj| self.value == obj.value,
+        };
+    }
 };
 
 pub const ReturnValue = struct {
@@ -270,6 +306,18 @@ pub const String = struct {
     fn inspect(self: @This(), out: *std.Io.Writer) !void {
         _ = try out.write(self.value);
     }
+
+    fn hashKey(self: @This()) u64 {
+        return std.hash_map.hashString(self.value);
+    }
+
+    fn eql(self: @This(), other: Hashable) bool {
+        return switch (other) {
+            .integer => false,
+            .boolean => false,
+            .string => |str| std.mem.eql(u8, self.value, str.value),
+        };
+    }
 };
 
 pub const Builtin = struct {
@@ -318,6 +366,97 @@ pub const Array = struct {
             obj.deinit(alloc);
         }
         alloc.free(self.elements);
+    }
+};
+
+pub const Hashable = union(enum) {
+    integer: Integer,
+    boolean: Boolean,
+    string: String,
+
+    pub fn toObject(self: Hashable) Object {
+        return switch (self) {
+            .integer => |obj| Object{ .integer = obj },
+            .boolean => |obj| Object{ .boolean = obj },
+            .string => |obj| Object{ .string = obj },
+        };
+    }
+
+    pub fn hashKey(self: Hashable) u64 {
+        return switch (self) {
+            inline else => |obj| obj.hashKey(),
+        };
+    }
+
+    pub fn eql(self: Hashable, other: Hashable) bool {
+        return switch (self) {
+            inline else => |obj| obj.eql(other),
+        };
+    }
+};
+
+pub const HashMapContext = struct {
+    pub fn hash(_: @This(), key: Hashable) u64 {
+        return key.hashKey();
+    }
+
+    pub fn eql(_: @This(), a: Hashable, b: Hashable) bool {
+        return a.eql(b);
+    }
+};
+
+pub const HashMap = std.HashMapUnmanaged(
+    Hashable,
+    Object,
+    HashMapContext,
+    std.hash_map.default_max_load_percentage,
+);
+
+pub const Hash = struct {
+    pairs: HashMap,
+
+    fn clone(self: @This(), alloc: std.mem.Allocator) !Object {
+        var new = Hash{
+            .pairs = HashMap.empty,
+        };
+        try new.pairs.ensureTotalCapacity(alloc, self.pairs.size);
+
+        var iter = self.pairs.iterator();
+        while (iter.next()) |entry| {
+            try new.pairs.put(
+                alloc,
+                (try entry.key_ptr.toObject().clone(alloc)).toHashable(),
+                try entry.value_ptr.clone(alloc),
+            );
+        }
+
+        return .{ .hash = new };
+    }
+
+    fn deinit(self: @This(), alloc: std.mem.Allocator) void {
+        var iter = self.pairs.iterator();
+        while (iter.next()) |entry| {
+            entry.key_ptr.toObject().deinit(alloc);
+            entry.value_ptr.deinit(alloc);
+        }
+        var pairs = self.pairs;
+        pairs.deinit(alloc);
+    }
+
+    fn inspect(self: @This(), out: *std.Io.Writer) !void {
+        _ = try out.write("{");
+        var iter = self.pairs.iterator();
+        var i: usize = 0;
+        while (iter.next()) |entry| {
+            if (i != 0) _ = try out.write(", ");
+
+            try entry.key_ptr.toObject().inspect(out);
+            _ = try out.write(": ");
+            try entry.value_ptr.inspect(out);
+
+            i += 1;
+        }
+        _ = try out.write("}");
     }
 };
 

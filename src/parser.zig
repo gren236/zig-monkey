@@ -21,6 +21,7 @@ inline fn getPrefixParseFnFromNodeType(token_type: Lexer.TokenType) !PrefixParse
         .FUNCTION => parseFunctionLiteral,
         .STRING => parseStringLiteral,
         .LBRACKET => parseArrayLiteral,
+        .LBRACE => parseHashLiteral,
         else => error.UnrecognisedTokenType,
     };
 }
@@ -429,6 +430,38 @@ fn parseArrayLiteral(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expres
         .array_literal = .{
             .token = self.cur_token,
             .elements = try self.parseExpressionList(alloc, .RBRACKET),
+        },
+    } };
+}
+
+fn parseHashLiteral(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Expression) {
+    var pairs = ast.ExpressionMap.empty;
+
+    while (self.peek_token.token_type != .RBRACE) {
+        self.nextToken();
+
+        var key = try self.parseExpression(alloc, .lowest);
+        errdefer key.deinit(alloc);
+        if (!try self.expectPeek(alloc, .COLON)) return error.ParseError;
+
+        self.nextToken();
+
+        var value = try self.parseExpression(alloc, .lowest);
+        errdefer value.deinit(alloc);
+
+        try pairs.put(alloc, key, value);
+
+        if (self.peek_token.token_type != .RBRACE and !try self.expectPeek(alloc, .COMMA)) {
+            return error.ParseError;
+        }
+    }
+
+    if (!try self.expectPeek(alloc, .RBRACE)) return error.ParseError;
+
+    return ast.Node(.Expression){ .val = .{
+        .hash_literal = .{
+            .token = self.cur_token,
+            .pairs = pairs,
         },
     } };
 }
@@ -920,6 +953,115 @@ test "index expression" {
     try testIntegerLiteral(index_infix.left, 1);
     try std.testing.expectEqualStrings("+", index_infix.operator);
     try testIntegerLiteral(index_infix.right, 1);
+}
+
+test "hash literal" {
+    const input = "{\"one\": 1, \"two\": 2, \"three\": 3}";
+
+    const alloc = std.testing.allocator;
+
+    var l = Lexer.init(input);
+    var p = init(&l);
+    defer p.deinit(alloc);
+
+    var program = try p.parseProgram(alloc);
+    defer program.deinit(alloc);
+
+    try checkParserErrors(&p);
+    try std.testing.expectEqual(1, program.statements.len);
+
+    const hash = program.statements[0].val.expression_stmt.expression.val.hash_literal;
+    try std.testing.expectEqual(3, hash.pairs.size);
+
+    const expected = .{
+        .{ "one", 1 },
+        .{ "two", 2 },
+        .{ "three", 3 },
+    };
+
+    var iter = hash.pairs.iterator();
+    var count: usize = 0;
+    while (iter.next()) |entry| {
+        const key_str = entry.key_ptr.val.string_literal.value;
+        const int_val = entry.value_ptr.val.int_literal.value;
+
+        var found = false;
+        inline for (expected) |exp| {
+            const exp_key, const exp_val = exp;
+            if (std.mem.eql(u8, key_str, exp_key)) {
+                try std.testing.expectEqual(exp_val, int_val);
+                found = true;
+            }
+        }
+        try std.testing.expect(found);
+        count += 1;
+    }
+    try std.testing.expectEqual(expected.len, count);
+}
+
+test "empty hash literal" {
+    const input = "{}";
+
+    const alloc = std.testing.allocator;
+
+    var l = Lexer.init(input);
+    var p = init(&l);
+    defer p.deinit(alloc);
+
+    var program = try p.parseProgram(alloc);
+    defer program.deinit(alloc);
+
+    try checkParserErrors(&p);
+    try std.testing.expectEqual(1, program.statements.len);
+
+    const hash = program.statements[0].val.expression_stmt.expression.val.hash_literal;
+    try std.testing.expectEqual(0, hash.pairs.size);
+}
+
+test "hash literal with expressions" {
+    const input = "{\"one\": 0 + 1, \"two\": 10 - 8, \"three\": 15 / 5}";
+
+    const alloc = std.testing.allocator;
+
+    var l = Lexer.init(input);
+    var p = init(&l);
+    defer p.deinit(alloc);
+
+    var program = try p.parseProgram(alloc);
+    defer program.deinit(alloc);
+
+    try checkParserErrors(&p);
+    try std.testing.expectEqual(1, program.statements.len);
+
+    const hash = program.statements[0].val.expression_stmt.expression.val.hash_literal;
+    try std.testing.expectEqual(3, hash.pairs.size);
+
+    const expected = .{
+        .{ "one", 0, "+", 1 },
+        .{ "two", 10, "-", 8 },
+        .{ "three", 15, "/", 5 },
+    };
+
+    var iter = hash.pairs.iterator();
+    var count: usize = 0;
+    while (iter.next()) |entry| {
+        const key_str = entry.key_ptr.val.string_literal.value;
+        const val_infix = entry.value_ptr.val.infix;
+
+        var found = false;
+        inline for (expected) |exp| {
+            const exp_key, const exp_left, const exp_op, const exp_right = exp;
+            if (std.mem.eql(u8, key_str, exp_key)) {
+                try testIntegerLiteral(val_infix.left, exp_left);
+                try std.testing.expectEqualStrings(exp_op, val_infix.operator);
+                try testIntegerLiteral(val_infix.right, exp_right);
+                found = true;
+            }
+        }
+        try std.testing.expect(found);
+        count += 1;
+    }
+    try std.testing.expectEqual(expected.len, count);
 }
 
 test "operator precedence" {

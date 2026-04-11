@@ -31,6 +31,7 @@ pub const ExpressionNode = union(enum) {
     string_literal: StringLiteral,
     array_literal: ArrayLiteral,
     index_exp: IndexExpression,
+    hash_literal: HashLiteral,
 };
 
 pub fn Node(comptime T: NodeType) type {
@@ -68,6 +69,133 @@ pub fn Node(comptime T: NodeType) type {
         }
     };
 }
+
+pub const ExpressionHashContext = struct {
+    pub fn hash(_: @This(), key: Node(.Expression)) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        autoHash(&hasher, key);
+        return hasher.final();
+    }
+
+    pub fn eql(_: @This(), a: Node(.Expression), b: Node(.Expression)) bool {
+        return deepEql(a, b);
+    }
+
+    fn autoHash(hasher: anytype, key: anytype) void {
+        const Key = @TypeOf(key);
+        switch (@typeInfo(Key)) {
+            .@"struct" => |info| {
+                inline for (info.fields) |field| {
+                    autoHash(hasher, @field(key, field.name));
+                }
+            },
+            .@"union" => |info| {
+                if (info.tag_type) |Tag| {
+                    const tag: Tag = key;
+                    autoHash(hasher, tag);
+                    switch (key) {
+                        inline else => |val| autoHash(hasher, val),
+                    }
+                } else {
+                    @compileError("cannot hash untagged union");
+                }
+            },
+            .pointer => |info| {
+                switch (info.size) {
+                    .slice => {
+                        for (key) |element| {
+                            autoHash(hasher, element);
+                        }
+                        autoHash(hasher, key.len);
+                    },
+                    .one => autoHash(hasher, key.*),
+                    .many, .c => hasher.update(std.mem.asBytes(&@intFromPtr(key))),
+                }
+            },
+            .optional => {
+                if (key) |unwrapped| {
+                    autoHash(hasher, unwrapped);
+                } else {
+                    hasher.update(&.{0});
+                }
+            },
+            .@"enum" => hasher.update(std.mem.asBytes(&@intFromEnum(key))),
+            .int, .comptime_int => hasher.update(std.mem.asBytes(&key)),
+            .bool => hasher.update(std.mem.asBytes(&key)),
+            .array => {
+                for (key) |element| {
+                    autoHash(hasher, element);
+                }
+            },
+            .void => {},
+            else => {
+                if (std.meta.hasUniqueRepresentation(Key)) {
+                    hasher.update(std.mem.asBytes(&key));
+                } else {
+                    @compileError("unable to hash type " ++ @typeName(Key));
+                }
+            },
+        }
+    }
+
+    fn deepEql(a: anytype, b: @TypeOf(a)) bool {
+        const T = @TypeOf(a);
+        switch (@typeInfo(T)) {
+            .@"struct" => |info| {
+                inline for (info.fields) |field| {
+                    if (!deepEql(@field(a, field.name), @field(b, field.name))) return false;
+                }
+                return true;
+            },
+            .@"union" => |info| {
+                if (info.tag_type) |Tag| {
+                    const tag_a: Tag = a;
+                    const tag_b: Tag = b;
+                    if (tag_a != tag_b) return false;
+                    return switch (a) {
+                        inline else => |val, tag| deepEql(val, @field(b, @tagName(tag))),
+                    };
+                }
+                @compileError("cannot compare untagged union");
+            },
+            .pointer => |info| {
+                switch (info.size) {
+                    .slice => {
+                        if (a.len != b.len) return false;
+                        if (a.ptr == b.ptr) return true;
+                        for (a, b) |ae, be| {
+                            if (!deepEql(ae, be)) return false;
+                        }
+                        return true;
+                    },
+                    .one => return deepEql(a.*, b.*),
+                    .many, .c => return a == b,
+                }
+            },
+            .optional => {
+                if (a == null and b == null) return true;
+                if (a == null or b == null) return false;
+                return deepEql(a.?, b.?);
+            },
+            .@"enum" => return a == b,
+            .array => {
+                for (a, b) |ae, be| {
+                    if (!deepEql(ae, be)) return false;
+                }
+                return true;
+            },
+            .void => return true,
+            else => return a == b,
+        }
+    }
+};
+
+pub const ExpressionMap = std.HashMapUnmanaged(
+    Node(.Expression),
+    Node(.Expression),
+    ExpressionHashContext,
+    std.hash_map.default_max_load_percentage,
+);
 
 pub const Program = struct {
     statements: []Node(.Statement),
@@ -790,6 +918,62 @@ pub const IndexExpression = struct {
         _ = try writer.write("[");
         try self.index.writeString(writer);
         _ = try writer.write("])");
+    }
+};
+
+pub const HashLiteral = struct {
+    token: Lexer.Token,
+    pairs: ExpressionMap,
+
+    pub fn deinit(self: HashLiteral, alloc: std.mem.Allocator) void {
+        var iter = self.pairs.iterator();
+        while (iter.next()) |entry| {
+            entry.key_ptr.deinit(alloc);
+            entry.value_ptr.deinit(alloc);
+        }
+        var pairs = self.pairs;
+        pairs.deinit(alloc);
+    }
+
+    pub fn clone(self: HashLiteral, alloc: std.mem.Allocator) !Node(.Expression) {
+        var new = HashLiteral{
+            .token = self.token,
+            .pairs = ExpressionMap.empty,
+        };
+
+        try new.pairs.ensureTotalCapacity(alloc, self.pairs.size);
+        var iter = self.pairs.iterator();
+        while (iter.next()) |entry| {
+            try new.pairs.put(
+                alloc,
+                try entry.key_ptr.clone(alloc),
+                try entry.value_ptr.clone(alloc),
+            );
+        }
+
+        return .{ .val = .{ .hash_literal = new } };
+    }
+
+    pub fn tokenLiteral(self: HashLiteral) []const u8 {
+        return self.token.literal;
+    }
+
+    pub fn writeString(self: HashLiteral, writer: *std.Io.Writer) !void {
+        _ = try writer.write("{");
+
+        var iter = self.pairs.iterator();
+        var i: usize = 0;
+        while (iter.next()) |entry| {
+            if (i != 0) _ = try writer.write(", ");
+
+            try entry.key_ptr.writeString(writer);
+            _ = try writer.write(":");
+            try entry.value_ptr.writeString(writer);
+
+            i += 1;
+        }
+
+        _ = try writer.write("}");
     }
 };
 

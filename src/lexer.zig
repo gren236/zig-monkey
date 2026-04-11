@@ -35,6 +35,7 @@ pub const TokenType = enum {
     // Delimiters
     COMMA,
     SEMICOLON,
+    COLON,
 
     LPAREN,
     RPAREN,
@@ -176,6 +177,7 @@ pub fn nextToken(self: *@This()) Token {
         '<' => Token{ .token_type = TokenType.LT, .literal = self.getCurrentCharString() },
         '>' => Token{ .token_type = TokenType.GT, .literal = self.getCurrentCharString() },
         ';' => Token{ .token_type = TokenType.SEMICOLON, .literal = self.getCurrentCharString() },
+        ':' => Token{ .token_type = TokenType.COLON, .literal = self.getCurrentCharString() },
         '(' => Token{ .token_type = TokenType.LPAREN, .literal = self.getCurrentCharString() },
         ')' => Token{ .token_type = TokenType.RPAREN, .literal = self.getCurrentCharString() },
         ',' => Token{ .token_type = TokenType.COMMA, .literal = self.getCurrentCharString() },
@@ -224,6 +226,7 @@ test nextToken {
         \\ "foobar"
         \\ "foo bar"
         \\ [1, 2];
+        \\ {"foo": "bar"}
     ;
 
     const tests = [_]struct {
@@ -311,6 +314,11 @@ test nextToken {
         .{ .expectedType = TokenType.INT, .expectedLiteral = "2" },
         .{ .expectedType = TokenType.RBRACKET, .expectedLiteral = "]" },
         .{ .expectedType = TokenType.SEMICOLON, .expectedLiteral = ";" },
+        .{ .expectedType = TokenType.LBRACE, .expectedLiteral = "{" },
+        .{ .expectedType = TokenType.STRING, .expectedLiteral = "foo" },
+        .{ .expectedType = TokenType.COLON, .expectedLiteral = ":" },
+        .{ .expectedType = TokenType.STRING, .expectedLiteral = "bar" },
+        .{ .expectedType = TokenType.RBRACE, .expectedLiteral = "}" },
         .{ .expectedType = TokenType.EOF, .expectedLiteral = "" },
     };
 
