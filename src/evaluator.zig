@@ -69,12 +69,28 @@ fn pushBuiltin(alloc: std.mem.Allocator, args: []object.Object) !object.Object {
     } };
 }
 
+fn putsBuiltin(_: std.mem.Allocator, args: []object.Object) !object.Object {
+    if (args.len == 0) return nil_obj;
+
+    var buf: [1024]u8 = undefined;
+    var out_writer = std.fs.File.stdout().writer(&buf);
+    var writer = &out_writer.interface;
+    for (args) |arg| {
+        try arg.inspect(writer);
+        _ = try writer.write("\n");
+        try writer.flush();
+    }
+
+    return nil_obj;
+}
+
 const BuiltinFnIdent = enum {
     len,
     first,
     last,
     rest,
     push,
+    puts,
 
     fn getObject(ident: []const u8) ?object.Object {
         const ident_name = std.meta.stringToEnum(@This(), ident) orelse return null;
@@ -86,6 +102,7 @@ const BuiltinFnIdent = enum {
                 .last => lastBuiltin,
                 .rest => restBuiltin,
                 .push => pushBuiltin,
+                .puts => putsBuiltin,
             },
         } };
     }
