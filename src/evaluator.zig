@@ -69,11 +69,12 @@ fn pushBuiltin(alloc: std.mem.Allocator, args: []object.Object) !object.Object {
     } };
 }
 
-fn putsBuiltin(_: std.mem.Allocator, args: []object.Object) !object.Object {
+fn putsBuiltin(alloc: std.mem.Allocator, args: []object.Object) !object.Object {
     if (args.len == 0) return nil_obj;
 
     var buf: [1024]u8 = undefined;
-    var out_writer = std.fs.File.stdout().writer(&buf);
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    var out_writer = std.Io.File.stdout().writer(threaded.io(), &buf);
     var writer = &out_writer.interface;
     for (args) |arg| {
         try arg.inspect(writer);
