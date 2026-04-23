@@ -8,6 +8,8 @@ comptime {
     _ = @import("parser.zig");
     _ = @import("evaluator.zig");
     _ = @import("object.zig");
+    _ = @import("code.zig");
+    _ = @import("compiler.zig");
 }
 
 pub fn main(init: std.process.Init) !void {
