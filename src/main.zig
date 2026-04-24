@@ -10,6 +10,7 @@ comptime {
     _ = @import("object.zig");
     _ = @import("code.zig");
     _ = @import("compiler.zig");
+    _ = @import("vm.zig");
 }
 
 pub fn main(init: std.process.Init) !void {

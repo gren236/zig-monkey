@@ -8,7 +8,7 @@ const Parser = @import("parser.zig");
 
 const Self = @This();
 
-const Error = error{UnknownNode};
+const Error = error{ UnknownNode, UnsupportedOperator };
 
 instructions: std.ArrayList(u8),
 constants: std.ArrayList(object.Object),
@@ -69,11 +69,22 @@ fn compileStatement(self: *Self, alloc: std.mem.Allocator, node: *const ast.Node
     }
 }
 
+const Operator = enum {
+    @"+",
+};
+
 fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Node(.Expression)) !void {
     switch (node.val) {
         .infix => |inf| {
             try self.compileExpression(alloc, inf.left);
             try self.compileExpression(alloc, inf.right);
+
+            const operator = std.meta.stringToEnum(Operator, inf.operator) orelse
+                return Error.UnsupportedOperator;
+
+            switch (operator) {
+                .@"+" => _ = try self.emit(alloc, .add, &.{}),
+            }
         },
         .int_literal => |int_lit| {
             const integer: object.Object = .{ .integer = .{ .value = int_lit.value } };
@@ -113,6 +124,7 @@ test "integer arithmetic" {
             .expected_instructions = @constCast(&[_]code.Instructions{
                 &(try code.make(.constant, &.{0})),
                 &(try code.make(.constant, &.{1})),
+                &(try code.make(.add, &.{})),
             }),
         },
     };

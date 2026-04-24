@@ -9,7 +9,7 @@ const Parser = @import("parser.zig");
 
 const Self = @This();
 
-const Error = error{ UnknownOpcode, StackOverflow };
+const Error = error{ UnknownOpcode, StackOverflow, StackExhausted };
 
 const stack_size = 2048;
 
@@ -42,6 +42,15 @@ pub fn run(self: *Self) !void {
 
                 try self.push(self.constants[const_index]);
             },
+            .add => {
+                const left = self.pop() orelse return Error.StackExhausted;
+                const right = self.pop() orelse return Error.StackExhausted;
+                const left_val = left.integer.value;
+                const right_val = right.integer.value;
+
+                const result = left_val + right_val;
+                try self.push(.{ .integer = .{ .value = result } });
+            },
         }
 
         ip += 1;
@@ -53,6 +62,15 @@ fn push(self: *Self, o: object.Object) !void {
 
     self.stack[self.sp] = o;
     self.sp += 1;
+}
+
+fn pop(self: *Self) ?object.Object {
+    if (self.sp == 0) return null;
+
+    const o = self.stack[self.sp - 1];
+    self.sp -= 1;
+
+    return o;
 }
 
 fn stackTop(self: *Self) ?object.Object {
@@ -74,7 +92,7 @@ test "integer arithmetic" {
     const tests: []const VmTestCase = &.{
         .{ .input = "1", .expected = .{ .int = 1 } },
         .{ .input = "2", .expected = .{ .int = 2 } },
-        .{ .input = "1 + 2", .expected = .{ .int = 2 } }, // FIXME
+        .{ .input = "1 + 2", .expected = .{ .int = 3 } },
     };
 
     try runVmTests(tests);

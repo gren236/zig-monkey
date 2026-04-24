@@ -9,11 +9,13 @@ const Definition = struct {
 
 pub const Opcode = enum(u8) {
     constant,
+    add,
 
     inline fn lookup(op: @This()) Definition {
         return switch (op) {
             // 2 bytes should be enough to represent a const index
             .constant => .{ .name = "OpConstant", .operand_widths = &.{2} },
+            .add => .{ .name = "OpAdd", .operand_widths = &.{} },
         };
     }
 
@@ -44,6 +46,7 @@ pub fn writeInstructions(ins: Instructions, writer: *std.Io.Writer) !void {
                 try writer.print("{d:0>4} ", .{i});
 
                 switch (def.operand_widths.len) {
+                    0 => try writer.print("{s}\n", .{def.name}),
                     1 => try writer.print("{s} {d}\n", .{ def.name, operands[0] }),
                     else => return Error.UnexpectedOperandWidth,
                 }
@@ -56,15 +59,15 @@ pub fn writeInstructions(ins: Instructions, writer: *std.Io.Writer) !void {
 
 test writeInstructions {
     const instructions: []const Instructions = &.{
-        &(try make(.constant, &.{1})),
+        &(try make(.add, &.{})),
         &(try make(.constant, &.{2})),
         &(try make(.constant, &.{65535})),
     };
 
     const expected =
-        \\0000 OpConstant 1
-        \\0003 OpConstant 2
-        \\0006 OpConstant 65535
+        \\0000 OpAdd
+        \\0001 OpConstant 2
+        \\0004 OpConstant 65535
     ;
 
     const alloc = std.testing.allocator;
@@ -107,6 +110,7 @@ test make {
         expected: []const u8,
     } = comptime &.{
         .{ .op = Opcode.constant, .operands = &[_]usize{65534}, .expected = &[_]u8{ @intFromEnum(Opcode.constant), 255, 254 } },
+        .{ .op = Opcode.add, .operands = &[0]usize{}, .expected = &[_]u8{@intFromEnum(Opcode.add)} },
     };
 
     inline for (tests) |tt| {
