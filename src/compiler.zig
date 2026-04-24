@@ -52,7 +52,7 @@ fn emit(self: *Self, alloc: std.mem.Allocator, op: code.Opcode, operands: []cons
     }
 }
 
-fn compile(self: *Self, alloc: std.mem.Allocator, node: ast.Node(.Common)) !void {
+pub fn compile(self: *Self, alloc: std.mem.Allocator, node: ast.Node(.Common)) !void {
     switch (node.val) {
         .program => |prog| {
             for (prog.statements) |stmt| {
@@ -88,7 +88,7 @@ pub const Bytecode = struct {
     constants: []const object.Object,
 };
 
-fn bytecode(self: *Self) Bytecode {
+pub fn bytecode(self: *Self) Bytecode {
     return .{
         .instructions = self.instructions.items,
         .constants = self.constants.items,
