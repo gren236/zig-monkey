@@ -9,7 +9,7 @@ const Parser = @import("parser.zig");
 
 const Self = @This();
 
-const Error = error{ UnknownOpcode, StackOverflow, StackExhausted };
+pub const Error = error{ UnknownOpcode, StackOverflow, StackExhausted };
 
 const stack_size = 2048;
 
@@ -57,6 +57,12 @@ pub fn run(self: *Self) !void {
     }
 }
 
+pub fn stackTop(self: *Self) ?object.Object {
+    if (self.sp == 0) return null;
+
+    return self.stack[self.sp - 1];
+}
+
 fn push(self: *Self, o: object.Object) !void {
     if (self.sp >= stack_size) return Error.StackOverflow;
 
@@ -71,12 +77,6 @@ fn pop(self: *Self) ?object.Object {
     self.sp -= 1;
 
     return o;
-}
-
-fn stackTop(self: *Self) ?object.Object {
-    if (self.sp == 0) return null;
-
-    return self.stack[self.sp - 1];
 }
 
 // Testing

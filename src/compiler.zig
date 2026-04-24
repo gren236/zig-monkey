@@ -8,7 +8,7 @@ const Parser = @import("parser.zig");
 
 const Self = @This();
 
-const Error = error{ UnknownNode, UnsupportedOperator };
+pub const Error = error{ UnknownNode, UnsupportedOperator };
 
 instructions: std.ArrayList(u8),
 constants: std.ArrayList(object.Object),

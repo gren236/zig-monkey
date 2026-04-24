@@ -1,10 +1,11 @@
 const std = @import("std");
 
 const ast = @import("ast.zig");
-const evaluator = @import("evaluator.zig");
+const Compiler = @import("compiler.zig");
 const Lexer = @import("lexer.zig");
-const Parser = @import("parser.zig");
 const object = @import("object.zig");
+const Parser = @import("parser.zig");
+const Vm = @import("vm.zig");
 
 const prompt = ">> ";
 const monkey_face =
@@ -25,9 +26,6 @@ const monkey_face =
 pub fn start(in: *std.Io.Reader, out: *std.Io.Writer) !void {
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     const alloc = gpa.allocator();
-
-    var env = try object.Environment.init(alloc);
-    defer env.deinit(alloc);
 
     while (true) {
         try out.print(prompt, .{});
@@ -51,12 +49,21 @@ pub fn start(in: *std.Io.Reader, out: *std.Io.Writer) !void {
             continue;
         }
 
-        var evaluated = try evaluator.eval(
-            alloc,
-            &ast.Node(.Common){ .val = .{ .program = program } },
-            &env,
-        );
-        try evaluated.inspect(out);
+        var comp: Compiler = .init();
+        defer comp.deinit(iter_alloc);
+        comp.compile(iter_alloc, .{ .val = .{ .program = program } }) catch |err| {
+            std.debug.print("Compilation error: {t}\n", .{err});
+            continue;
+        };
+
+        var machine = Vm.init(comp.bytecode());
+        machine.run() catch |err| {
+            std.debug.print("VM run error: {t}\n", .{err});
+            continue;
+        };
+
+        const stack_top = machine.stackTop() orelse object.Object{ .nil = .{} };
+        try stack_top.inspect(out);
         _ = try out.write("\n");
 
         try out.flush();
