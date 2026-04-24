@@ -14,6 +14,8 @@ pub const Opcode = enum(u8) {
     mul,
     div,
     pop,
+    true,
+    false,
 
     inline fn lookup(op: @This()) Definition {
         return switch (op) {
@@ -24,6 +26,8 @@ pub const Opcode = enum(u8) {
             .mul => .{ .name = "OpMul", .operand_widths = &.{} },
             .div => .{ .name = "OpDiv", .operand_widths = &.{} },
             .pop => .{ .name = "OpPop", .operand_widths = &.{} },
+            .true => .{ .name = "OpTrue", .operand_widths = &.{} },
+            .false => .{ .name = "OpFalse", .operand_widths = &.{} },
         };
     }
 

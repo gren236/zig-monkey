@@ -18,6 +18,8 @@ pub const Error = error{
 };
 
 const stack_size = 2048;
+const true_obj: object.Object = .{ .boolean = .{ .value = true } };
+const false_obj: object.Object = .{ .boolean = .{ .value = false } };
 
 constants: []const object.Object,
 instructions: code.Instructions,
@@ -49,6 +51,8 @@ pub fn run(self: *Self) !void {
                 try self.push(self.constants[const_index]);
             },
             .add, .sub, .mul, .div => try self.executeBinaryOperation(op),
+            .true => try self.push(true_obj),
+            .false => try self.push(false_obj),
             .pop => _ = self.pop(),
         }
 
@@ -115,6 +119,7 @@ const VmTestCase = struct {
     input: []const u8,
     expected: union(enum) {
         int: i64,
+        boolean: bool,
     },
 };
 
@@ -137,6 +142,15 @@ test "integer arithmetic" {
     try runVmTests(tests);
 }
 
+test "boolean expressions" {
+    const tests: []const VmTestCase = &.{
+        .{ .input = "true", .expected = .{ .boolean = true } },
+        .{ .input = "false", .expected = .{ .boolean = false } },
+    };
+
+    try runVmTests(tests);
+}
+
 fn parse(alloc: std.mem.Allocator, input: []const u8) !ast.Node(.Common) {
     var l = Lexer.init(input);
     var p = Parser.init(&l);
@@ -149,9 +163,15 @@ fn testIntegerObject(expected: i64, actual: object.Object) !void {
     try std.testing.expectEqual(expected, actual.integer.value);
 }
 
+fn testBooleanObject(expected: bool, actual: object.Object) !void {
+    try std.testing.expectEqual(object.ObjectType.boolean, @as(object.ObjectType, actual));
+    try std.testing.expectEqual(expected, actual.boolean.value);
+}
+
 fn testExpectedObject(expected: @FieldType(VmTestCase, "expected"), actual: object.Object) !void {
     switch (expected) {
         .int => |exp| try testIntegerObject(exp, actual),
+        .boolean => |exp| try testBooleanObject(exp, actual),
     }
 }
 

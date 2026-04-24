@@ -99,6 +99,7 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
             const integer: object.Object = .{ .integer = .{ .value = int_lit.value } };
             _ = try self.emit(alloc, .constant, &.{try self.addConstant(alloc, integer)});
         },
+        .boolean => |bool_lit| _ = try self.emit(alloc, if (bool_lit.value) .true else .false, &.{}),
         else => return Error.UnknownNode,
     }
 }
@@ -174,6 +175,29 @@ test "integer arithmetic" {
                 &(try code.make(.constant, &.{0})),
                 &(try code.make(.constant, &.{1})),
                 &(try code.make(.div, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+    };
+
+    try runCompilerTests(tests);
+}
+
+test "boolean expressions" {
+    const tests: []const CompilerTestCase = &.{
+        .{
+            .input = "true",
+            .expected_constants = &.{},
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.true, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "false",
+            .expected_constants = &.{},
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.false, &.{})),
                 &(try code.make(.pop, &.{})),
             }),
         },
