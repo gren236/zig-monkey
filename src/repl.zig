@@ -62,7 +62,7 @@ pub fn start(in: *std.Io.Reader, out: *std.Io.Writer) !void {
             continue;
         };
 
-        const stack_top = machine.stackTop() orelse object.Object{ .nil = .{} };
+        const stack_top = machine.lastPoppedStackElem();
         try stack_top.inspect(out);
         _ = try out.write("\n");
 

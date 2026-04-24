@@ -23,7 +23,7 @@ pub fn init(bytecode: Compiler.Bytecode) Self {
     return .{
         .instructions = bytecode.instructions,
         .constants = bytecode.constants,
-        .stack = undefined,
+        .stack = .{object.Object{ .nil = .{} }} ** stack_size,
         .sp = 0,
     };
 }
@@ -51,6 +51,7 @@ pub fn run(self: *Self) !void {
                 const result = left_val + right_val;
                 try self.push(.{ .integer = .{ .value = result } });
             },
+            .pop => _ = self.pop(),
         }
 
         ip += 1;
@@ -61,6 +62,10 @@ pub fn stackTop(self: *Self) ?object.Object {
     if (self.sp == 0) return null;
 
     return self.stack[self.sp - 1];
+}
+
+pub fn lastPoppedStackElem(self: *Self) object.Object {
+    return self.stack[self.sp];
 }
 
 fn push(self: *Self, o: object.Object) !void {
@@ -132,9 +137,8 @@ fn runVmTests(tests: []const VmTestCase) !void {
         var vm = init(compiler.bytecode());
         try vm.run();
 
-        const stack_elem = vm.stackTop();
-        try std.testing.expect(stack_elem != null);
+        const stack_elem = vm.lastPoppedStackElem();
 
-        try testExpectedObject(tt.expected, stack_elem.?);
+        try testExpectedObject(tt.expected, stack_elem);
     }
 }

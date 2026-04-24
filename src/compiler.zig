@@ -64,7 +64,10 @@ pub fn compile(self: *Self, alloc: std.mem.Allocator, node: ast.Node(.Common)) !
 
 fn compileStatement(self: *Self, alloc: std.mem.Allocator, node: *const ast.Node(.Statement)) !void {
     switch (node.val) {
-        .expression_stmt => |stmt| return try self.compileExpression(alloc, stmt.expression),
+        .expression_stmt => |stmt| {
+            try self.compileExpression(alloc, stmt.expression);
+            _ = try self.emit(alloc, .pop, &.{});
+        },
         else => return Error.UnknownNode,
     }
 }
@@ -125,6 +128,17 @@ test "integer arithmetic" {
                 &(try code.make(.constant, &.{0})),
                 &(try code.make(.constant, &.{1})),
                 &(try code.make(.add, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "1; 2",
+            .expected_constants = &.{ .{ .int = 1 }, .{ .int = 2 } },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.pop, &.{})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.pop, &.{})),
             }),
         },
     };
