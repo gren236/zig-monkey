@@ -54,6 +54,8 @@ pub fn run(self: *Self) !void {
             .true => try self.push(true_obj),
             .false => try self.push(false_obj),
             .equal, .not_equal, .greater_than => try self.executeComparison(op),
+            .bang => try self.executeBangOperator(),
+            .minus => try self.executeMinusOperator(),
             .pop => _ = self.pop(),
         }
 
@@ -148,6 +150,25 @@ fn executeIntegerComparison(self: *Self, op: code.Opcode, left: object.Object, r
     ));
 }
 
+fn executeBangOperator(self: *Self) !void {
+    const operand = self.pop() orelse return Error.StackExhausted;
+
+    if (@as(object.ObjectType, operand) == .boolean and operand.boolean.value == false) {
+        try self.push(true_obj);
+        return;
+    }
+
+    try self.push(false_obj);
+}
+
+fn executeMinusOperator(self: *Self) !void {
+    const operand = self.pop() orelse return Error.StackExhausted;
+
+    if (@as(object.ObjectType, operand) != .integer) return Error.UnsupportedOperator;
+
+    try self.push(.{ .integer = .{ .value = -operand.integer.value } });
+}
+
 // Testing
 
 const VmTestCase = struct {
@@ -172,6 +193,10 @@ test "integer arithmetic" {
         .{ .input = "5 * 2 + 10", .expected = .{ .int = 20 } },
         .{ .input = "5 + 2 * 10", .expected = .{ .int = 25 } },
         .{ .input = "5 * (2 + 10)", .expected = .{ .int = 60 } },
+        .{ .input = "-5", .expected = .{ .int = -5 } },
+        .{ .input = "-10", .expected = .{ .int = -10 } },
+        .{ .input = "-50 + 100 + -50", .expected = .{ .int = 0 } },
+        .{ .input = "(5 + 10 * 2 + 15 / 3) * 2 + -10", .expected = .{ .int = 50 } },
     };
 
     try runVmTests(tests);
@@ -195,6 +220,12 @@ test "boolean expressions" {
         .{ .input = "true != false", .expected = .{ .boolean = true } },
         .{ .input = "(1 < 2) == true", .expected = .{ .boolean = true } },
         .{ .input = "(1 < 2) == false", .expected = .{ .boolean = false } },
+        .{ .input = "!true", .expected = .{ .boolean = false } },
+        .{ .input = "!false", .expected = .{ .boolean = true } },
+        .{ .input = "!5", .expected = .{ .boolean = false } },
+        .{ .input = "!!true", .expected = .{ .boolean = true } },
+        .{ .input = "!!false", .expected = .{ .boolean = false } },
+        .{ .input = "!!5", .expected = .{ .boolean = true } },
     };
 
     try runVmTests(tests);

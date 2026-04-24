@@ -80,6 +80,7 @@ const Operator = enum {
     @">",
     @"==",
     @"!=",
+    @"!",
 };
 
 fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Node(.Expression)) !void {
@@ -108,6 +109,19 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
                 .@">" => _ = try self.emit(alloc, .greater_than, &.{}),
                 .@"==" => _ = try self.emit(alloc, .equal, &.{}),
                 .@"!=" => _ = try self.emit(alloc, .not_equal, &.{}),
+                else => return Error.UnsupportedOperator,
+            }
+        },
+        .prefix => |pref| {
+            try self.compileExpression(alloc, pref.right);
+
+            const operator = std.meta.stringToEnum(Operator, pref.operator) orelse
+                return Error.UnsupportedOperator;
+
+            switch (operator) {
+                .@"!" => _ = try self.emit(alloc, .bang, &.{}),
+                .@"-" => _ = try self.emit(alloc, .minus, &.{}),
+                else => return Error.UnsupportedOperator,
             }
         },
         .int_literal => |int_lit| {
@@ -193,6 +207,15 @@ test "integer arithmetic" {
                 &(try code.make(.pop, &.{})),
             }),
         },
+        .{
+            .input = "-1",
+            .expected_constants = &.{.{ .int = 1 }},
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.minus, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
     };
 
     try runCompilerTests(tests);
@@ -273,6 +296,15 @@ test "boolean expressions" {
                 &(try code.make(.true, &.{})),
                 &(try code.make(.false, &.{})),
                 &(try code.make(.not_equal, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "!true",
+            .expected_constants = &.{},
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.true, &.{})),
+                &(try code.make(.bang, &.{})),
                 &(try code.make(.pop, &.{})),
             }),
         },
