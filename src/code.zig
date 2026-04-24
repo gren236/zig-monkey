@@ -16,6 +16,9 @@ pub const Opcode = enum(u8) {
     pop,
     true,
     false,
+    equal,
+    not_equal,
+    greater_than,
 
     inline fn lookup(op: @This()) Definition {
         return switch (op) {
@@ -28,6 +31,9 @@ pub const Opcode = enum(u8) {
             .pop => .{ .name = "OpPop", .operand_widths = &.{} },
             .true => .{ .name = "OpTrue", .operand_widths = &.{} },
             .false => .{ .name = "OpFalse", .operand_widths = &.{} },
+            .equal => .{ .name = "OpEqual", .operand_widths = &.{} },
+            .not_equal => .{ .name = "OpNotEqual", .operand_widths = &.{} },
+            .greater_than => .{ .name = "OpGreaterThan", .operand_widths = &.{} },
         };
     }
 

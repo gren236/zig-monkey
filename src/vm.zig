@@ -53,6 +53,7 @@ pub fn run(self: *Self) !void {
             .add, .sub, .mul, .div => try self.executeBinaryOperation(op),
             .true => try self.push(true_obj),
             .false => try self.push(false_obj),
+            .equal, .not_equal, .greater_than => try self.executeComparison(op),
             .pop => _ = self.pop(),
         }
 
@@ -113,6 +114,40 @@ fn executeBinaryIntegerOperation(self: *Self, op: code.Opcode, left: object.Obje
     } });
 }
 
+inline fn nativeBoolToBoolObj(in: bool) object.Object {
+    return if (in) true_obj else false_obj;
+}
+
+fn executeComparison(self: *Self, op: code.Opcode) !void {
+    const right = self.pop() orelse return Error.StackExhausted;
+    const left = self.pop() orelse return Error.StackExhausted;
+
+    const left_type = @as(object.ObjectType, left);
+    const right_type = @as(object.ObjectType, right);
+
+    if (left_type == .integer and right_type == .integer) return try self.executeIntegerComparison(op, left, right);
+
+    switch (op) {
+        .equal => try self.push(nativeBoolToBoolObj(right.boolean.value == left.boolean.value)),
+        .not_equal => try self.push(nativeBoolToBoolObj(right.boolean.value != left.boolean.value)),
+        else => return Error.UnsupportedOperator,
+    }
+}
+
+fn executeIntegerComparison(self: *Self, op: code.Opcode, left: object.Object, right: object.Object) !void {
+    const left_val = left.integer.value;
+    const right_val = right.integer.value;
+
+    try self.push(nativeBoolToBoolObj(
+        switch (op) {
+            .equal => left_val == right_val,
+            .not_equal => left_val != right_val,
+            .greater_than => left_val > right_val,
+            else => return Error.UnsupportedOperator,
+        },
+    ));
+}
+
 // Testing
 
 const VmTestCase = struct {
@@ -146,6 +181,20 @@ test "boolean expressions" {
     const tests: []const VmTestCase = &.{
         .{ .input = "true", .expected = .{ .boolean = true } },
         .{ .input = "false", .expected = .{ .boolean = false } },
+        .{ .input = "1 < 2", .expected = .{ .boolean = true } },
+        .{ .input = "1 > 2", .expected = .{ .boolean = false } },
+        .{ .input = "1 < 1", .expected = .{ .boolean = false } },
+        .{ .input = "1 > 1", .expected = .{ .boolean = false } },
+        .{ .input = "1 == 1", .expected = .{ .boolean = true } },
+        .{ .input = "1 != 1", .expected = .{ .boolean = false } },
+        .{ .input = "1 == 2", .expected = .{ .boolean = false } },
+        .{ .input = "1 != 2", .expected = .{ .boolean = true } },
+        .{ .input = "true == true", .expected = .{ .boolean = true } },
+        .{ .input = "false == false", .expected = .{ .boolean = true } },
+        .{ .input = "true == false", .expected = .{ .boolean = false } },
+        .{ .input = "true != false", .expected = .{ .boolean = true } },
+        .{ .input = "(1 < 2) == true", .expected = .{ .boolean = true } },
+        .{ .input = "(1 < 2) == false", .expected = .{ .boolean = false } },
     };
 
     try runVmTests(tests);

@@ -77,11 +77,23 @@ const Operator = enum {
     @"-",
     @"*",
     @"/",
+    @">",
+    @"==",
+    @"!=",
 };
 
 fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Node(.Expression)) !void {
     switch (node.val) {
         .infix => |inf| {
+            // special case for < operator
+            if (std.mem.eql(u8, "<", inf.operator)) {
+                try self.compileExpression(alloc, inf.right);
+                try self.compileExpression(alloc, inf.left);
+                _ = try self.emit(alloc, .greater_than, &.{});
+
+                return;
+            }
+
             try self.compileExpression(alloc, inf.left);
             try self.compileExpression(alloc, inf.right);
 
@@ -93,6 +105,9 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
                 .@"-" => _ = try self.emit(alloc, .sub, &.{}),
                 .@"*" => _ = try self.emit(alloc, .mul, &.{}),
                 .@"/" => _ = try self.emit(alloc, .div, &.{}),
+                .@">" => _ = try self.emit(alloc, .greater_than, &.{}),
+                .@"==" => _ = try self.emit(alloc, .equal, &.{}),
+                .@"!=" => _ = try self.emit(alloc, .not_equal, &.{}),
             }
         },
         .int_literal => |int_lit| {
@@ -198,6 +213,66 @@ test "boolean expressions" {
             .expected_constants = &.{},
             .expected_instructions = @constCast(&[_]code.Instructions{
                 &(try code.make(.false, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "1 > 2",
+            .expected_constants = &.{ .{ .int = 1 }, .{ .int = 2 } },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.greater_than, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "1 < 2",
+            .expected_constants = &.{ .{ .int = 2 }, .{ .int = 1 } },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.greater_than, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "1 == 2",
+            .expected_constants = &.{ .{ .int = 1 }, .{ .int = 2 } },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.equal, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "1 != 2",
+            .expected_constants = &.{ .{ .int = 1 }, .{ .int = 2 } },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.not_equal, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "true == false",
+            .expected_constants = &.{},
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.true, &.{})),
+                &(try code.make(.false, &.{})),
+                &(try code.make(.equal, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "true != false",
+            .expected_constants = &.{},
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.true, &.{})),
+                &(try code.make(.false, &.{})),
+                &(try code.make(.not_equal, &.{})),
                 &(try code.make(.pop, &.{})),
             }),
         },
