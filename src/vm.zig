@@ -9,7 +9,13 @@ const Parser = @import("parser.zig");
 
 const Self = @This();
 
-pub const Error = error{ UnknownOpcode, StackOverflow, StackExhausted };
+pub const Error = error{
+    UnknownOpcode,
+    StackOverflow,
+    StackExhausted,
+    UnsupportedOperationTypes,
+    UnsupportedOperator,
+};
 
 const stack_size = 2048;
 
@@ -42,15 +48,7 @@ pub fn run(self: *Self) !void {
 
                 try self.push(self.constants[const_index]);
             },
-            .add => {
-                const left = self.pop() orelse return Error.StackExhausted;
-                const right = self.pop() orelse return Error.StackExhausted;
-                const left_val = left.integer.value;
-                const right_val = right.integer.value;
-
-                const result = left_val + right_val;
-                try self.push(.{ .integer = .{ .value = result } });
-            },
+            .add, .sub, .mul, .div => try self.executeBinaryOperation(op),
             .pop => _ = self.pop(),
         }
 
@@ -84,12 +82,39 @@ fn pop(self: *Self) ?object.Object {
     return o;
 }
 
+fn executeBinaryOperation(self: *Self, op: code.Opcode) !void {
+    const right = self.pop() orelse return Error.StackExhausted;
+    const left = self.pop() orelse return Error.StackExhausted;
+
+    const left_type = @as(object.ObjectType, left);
+    const right_type = @as(object.ObjectType, right);
+
+    if (left_type != .integer or right_type != .integer) return Error.UnsupportedOperationTypes;
+
+    try self.executeBinaryIntegerOperation(op, left, right);
+}
+
+fn executeBinaryIntegerOperation(self: *Self, op: code.Opcode, left: object.Object, right: object.Object) !void {
+    const left_val = left.integer.value;
+    const right_val = right.integer.value;
+
+    try self.push(.{ .integer = .{
+        .value = switch (op) {
+            .add => left_val + right_val,
+            .sub => left_val - right_val,
+            .mul => left_val * right_val,
+            .div => try std.math.divExact(i64, left_val, right_val),
+            else => return Error.UnsupportedOperator,
+        },
+    } });
+}
+
 // Testing
 
 const VmTestCase = struct {
     input: []const u8,
     expected: union(enum) {
-        int: usize,
+        int: i64,
     },
 };
 
@@ -98,6 +123,15 @@ test "integer arithmetic" {
         .{ .input = "1", .expected = .{ .int = 1 } },
         .{ .input = "2", .expected = .{ .int = 2 } },
         .{ .input = "1 + 2", .expected = .{ .int = 3 } },
+        .{ .input = "1 - 2", .expected = .{ .int = -1 } },
+        .{ .input = "1 * 2", .expected = .{ .int = 2 } },
+        .{ .input = "4 / 2", .expected = .{ .int = 2 } },
+        .{ .input = "50 / 2 * 2 + 10 - 5", .expected = .{ .int = 55 } },
+        .{ .input = "5 + 5 + 5 + 5 - 10", .expected = .{ .int = 10 } },
+        .{ .input = "2 * 2 * 2 * 2 * 2", .expected = .{ .int = 32 } },
+        .{ .input = "5 * 2 + 10", .expected = .{ .int = 20 } },
+        .{ .input = "5 + 2 * 10", .expected = .{ .int = 25 } },
+        .{ .input = "5 * (2 + 10)", .expected = .{ .int = 60 } },
     };
 
     try runVmTests(tests);
@@ -117,7 +151,7 @@ fn testIntegerObject(expected: i64, actual: object.Object) !void {
 
 fn testExpectedObject(expected: @FieldType(VmTestCase, "expected"), actual: object.Object) !void {
     switch (expected) {
-        .int => |exp| try testIntegerObject(@intCast(exp), actual),
+        .int => |exp| try testIntegerObject(exp, actual),
     }
 }
 

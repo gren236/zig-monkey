@@ -380,20 +380,20 @@ fn evalInfixExpression(
 }
 
 fn evalIntegerInfixExpression(alloc: std.mem.Allocator, operator: Operator, left: object.Object, right: object.Object) !object.Object {
-    const leftVal = left.integer.value;
-    const rightVal = right.integer.value;
+    const left_val = left.integer.value;
+    const right_val = right.integer.value;
 
     switch (operator) {
-        .@"+" => return object.Object{ .integer = .{ .value = leftVal + rightVal } },
-        .@"-" => return object.Object{ .integer = .{ .value = leftVal - rightVal } },
-        .@"*" => return object.Object{ .integer = .{ .value = leftVal * rightVal } },
+        .@"+" => return object.Object{ .integer = .{ .value = left_val + right_val } },
+        .@"-" => return object.Object{ .integer = .{ .value = left_val - right_val } },
+        .@"*" => return object.Object{ .integer = .{ .value = left_val * right_val } },
         .@"/" => return object.Object{
-            .integer = .{ .value = std.math.divExact(i64, leftVal, rightVal) catch return nil_obj },
+            .integer = .{ .value = std.math.divExact(i64, left_val, right_val) catch return nil_obj },
         },
-        .@"<" => return if (leftVal < rightVal) true_obj else false_obj,
-        .@">" => return if (leftVal > rightVal) true_obj else false_obj,
-        .@"==" => return if (leftVal == rightVal) true_obj else false_obj,
-        .@"!=" => return if (leftVal != rightVal) true_obj else false_obj,
+        .@"<" => return if (left_val < right_val) true_obj else false_obj,
+        .@">" => return if (left_val > right_val) true_obj else false_obj,
+        .@"==" => return if (left_val == right_val) true_obj else false_obj,
+        .@"!=" => return if (left_val != right_val) true_obj else false_obj,
         else => return try newError(alloc, "unknown operator: {s} {s} {s}", .{
             left.tagName(),
             @tagName(operator),

@@ -10,6 +10,9 @@ const Definition = struct {
 pub const Opcode = enum(u8) {
     constant,
     add,
+    sub,
+    mul,
+    div,
     pop,
 
     inline fn lookup(op: @This()) Definition {
@@ -17,6 +20,9 @@ pub const Opcode = enum(u8) {
             // 2 bytes should be enough to represent a const index
             .constant => .{ .name = "OpConstant", .operand_widths = &.{2} },
             .add => .{ .name = "OpAdd", .operand_widths = &.{} },
+            .sub => .{ .name = "OpSub", .operand_widths = &.{} },
+            .mul => .{ .name = "OpMul", .operand_widths = &.{} },
+            .div => .{ .name = "OpDiv", .operand_widths = &.{} },
             .pop => .{ .name = "OpPop", .operand_widths = &.{} },
         };
     }

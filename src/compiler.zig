@@ -74,6 +74,9 @@ fn compileStatement(self: *Self, alloc: std.mem.Allocator, node: *const ast.Node
 
 const Operator = enum {
     @"+",
+    @"-",
+    @"*",
+    @"/",
 };
 
 fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Node(.Expression)) !void {
@@ -87,6 +90,9 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
 
             switch (operator) {
                 .@"+" => _ = try self.emit(alloc, .add, &.{}),
+                .@"-" => _ = try self.emit(alloc, .sub, &.{}),
+                .@"*" => _ = try self.emit(alloc, .mul, &.{}),
+                .@"/" => _ = try self.emit(alloc, .div, &.{}),
             }
         },
         .int_literal => |int_lit| {
@@ -138,6 +144,36 @@ test "integer arithmetic" {
                 &(try code.make(.constant, &.{0})),
                 &(try code.make(.pop, &.{})),
                 &(try code.make(.constant, &.{1})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "1 - 2",
+            .expected_constants = &.{ .{ .int = 1 }, .{ .int = 2 } },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.sub, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "1 * 2",
+            .expected_constants = &.{ .{ .int = 1 }, .{ .int = 2 } },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.mul, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "2 / 1",
+            .expected_constants = &.{ .{ .int = 2 }, .{ .int = 1 } },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.div, &.{})),
                 &(try code.make(.pop, &.{})),
             }),
         },
