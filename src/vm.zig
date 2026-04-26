@@ -57,6 +57,20 @@ pub fn run(self: *Self) !void {
             .bang => try self.executeBangOperator(),
             .minus => try self.executeMinusOperator(),
             .pop => _ = self.pop(),
+            .jump => {
+                const width = 2;
+                const pos = code.readOperandInt(width, self.instructions[ip + 1 ..][0..width]);
+
+                ip = @intCast(pos - 1);
+            },
+            .jump_not_truthy => {
+                const width = 2;
+                const pos = code.readOperandInt(width, self.instructions[ip + 1 ..][0..width]);
+                ip += width;
+
+                const condition = self.pop() orelse return Error.StackExhausted;
+                if (!isTruthy(condition)) ip = @intCast(pos - 1);
+            },
         }
 
         ip += 1;
@@ -87,6 +101,13 @@ fn pop(self: *Self) ?object.Object {
     self.sp -= 1;
 
     return o;
+}
+
+fn isTruthy(obj: object.Object) bool {
+    return switch (obj) {
+        .boolean => |bool_obj| bool_obj.value,
+        else => true,
+    };
 }
 
 fn executeBinaryOperation(self: *Self, op: code.Opcode) !void {
@@ -226,6 +247,20 @@ test "boolean expressions" {
         .{ .input = "!!true", .expected = .{ .boolean = true } },
         .{ .input = "!!false", .expected = .{ .boolean = false } },
         .{ .input = "!!5", .expected = .{ .boolean = true } },
+    };
+
+    try runVmTests(tests);
+}
+
+test "conditionals" {
+    const tests: []const VmTestCase = &.{
+        .{ .input = "if (true) { 10 }", .expected = .{ .int = 10 } },
+        .{ .input = "if (true) { 10 } else { 20 }", .expected = .{ .int = 10 } },
+        .{ .input = "if (false) { 10 } else { 20 }", .expected = .{ .int = 20 } },
+        .{ .input = "if (1) { 10 }", .expected = .{ .int = 10 } },
+        .{ .input = "if (1 < 2) { 10 }", .expected = .{ .int = 10 } },
+        .{ .input = "if (1 < 2) { 10 } else { 20 }", .expected = .{ .int = 10 } },
+        .{ .input = "if (1 > 2) { 10 } else { 20 }", .expected = .{ .int = 20 } },
     };
 
     try runVmTests(tests);

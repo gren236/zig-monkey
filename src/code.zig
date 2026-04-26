@@ -21,6 +21,8 @@ pub const Opcode = enum(u8) {
     greater_than,
     minus,
     bang,
+    jump,
+    jump_not_truthy,
 
     inline fn lookup(op: @This()) Definition {
         return switch (op) {
@@ -38,6 +40,8 @@ pub const Opcode = enum(u8) {
             .greater_than => .{ .name = "OpGreaterThan", .operand_widths = &.{} },
             .minus => .{ .name = "OpMinus", .operand_widths = &.{} },
             .bang => .{ .name = "OpBang", .operand_widths = &.{} },
+            .jump => .{ .name = "OpJump", .operand_widths = &.{2} },
+            .jump_not_truthy => .{ .name = "OpJumpNotTruthy", .operand_widths = &.{2} },
         };
     }
 

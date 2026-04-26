@@ -10,13 +10,23 @@ const Self = @This();
 
 pub const Error = error{ UnknownNode, UnsupportedOperator };
 
+const EmittedInstruction = struct {
+    opcode: code.Opcode,
+    position: usize,
+};
+
 instructions: std.ArrayList(u8),
 constants: std.ArrayList(object.Object),
+
+last_instruction: EmittedInstruction,
+previous_instruction: EmittedInstruction,
 
 pub fn init() Self {
     return .{
         .instructions = .empty,
         .constants = .empty,
+        .last_instruction = std.mem.zeroInit(EmittedInstruction, .{}),
+        .previous_instruction = std.mem.zeroInit(EmittedInstruction, .{}),
     };
 }
 
@@ -47,9 +57,40 @@ fn emit(self: *Self, alloc: std.mem.Allocator, op: code.Opcode, operands: []cons
             var ins = try code.make(comp_op, operands);
             const pos = try self.addInstruction(alloc, &ins);
 
+            // set last/prev instructions
+            const previous = self.last_instruction;
+            const last: EmittedInstruction = .{ .opcode = op, .position = pos };
+
+            self.previous_instruction = previous;
+            self.last_instruction = last;
+
             return pos;
         },
     }
+}
+
+fn replaceInstruction(self: *Self, pos: usize, new_instr: []const u8) !void {
+    try self.instructions.replaceRangeBounded(pos, new_instr.len, new_instr);
+}
+
+fn changeOperand(self: *Self, op_pos: usize, operand: usize) !void {
+    const op = std.enums.fromInt(code.Opcode, self.instructions.items[op_pos]) orelse return Error.UnsupportedOperator;
+
+    switch (op) {
+        inline else => |comp_op| {
+            const new_instr = try code.make(comp_op, &.{operand});
+            try self.replaceInstruction(op_pos, &new_instr);
+        },
+    }
+}
+
+fn lastInstructionIsPop(self: *Self) bool {
+    return self.last_instruction.opcode == .pop;
+}
+
+fn removeLastPop(self: *Self) void {
+    _ = self.instructions.pop();
+    self.last_instruction = self.previous_instruction;
 }
 
 pub fn compile(self: *Self, alloc: std.mem.Allocator, node: ast.Node(.Common)) !void {
@@ -68,6 +109,11 @@ fn compileStatement(self: *Self, alloc: std.mem.Allocator, node: *const ast.Node
             try self.compileExpression(alloc, stmt.expression);
             _ = try self.emit(alloc, .pop, &.{});
         },
+        .block_stmt => |stmt| {
+            for (stmt.statements) |b_stmt| {
+                try self.compileStatement(alloc, &b_stmt);
+            }
+        },
         else => return Error.UnknownNode,
     }
 }
@@ -83,7 +129,7 @@ const Operator = enum {
     @"!",
 };
 
-fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Node(.Expression)) !void {
+fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Node(.Expression)) anyerror!void {
     switch (node.val) {
         .infix => |inf| {
             // special case for < operator
@@ -129,6 +175,38 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
             _ = try self.emit(alloc, .constant, &.{try self.addConstant(alloc, integer)});
         },
         .boolean => |bool_lit| _ = try self.emit(alloc, if (bool_lit.value) .true else .false, &.{}),
+        .if_exp => |if_exp| {
+            try self.compileExpression(alloc, if_exp.condition);
+
+            // emit with a made-up value
+            const jump_not_truthy_pos = try self.emit(alloc, .jump_not_truthy, &.{9999});
+
+            try self.compileStatement(alloc, &ast.Node(.Statement){
+                .val = .{ .block_stmt = if_exp.consequence.* },
+            });
+
+            if (self.lastInstructionIsPop()) self.removeLastPop();
+
+            if (if_exp.alternative == null) {
+                const pos_after_consequence = self.instructions.items.len;
+                try self.changeOperand(jump_not_truthy_pos, pos_after_consequence);
+            } else {
+                // emit with a made-up value
+                const jump_pos = try self.emit(alloc, .jump, &.{9999});
+
+                const pos_after_consequence = self.instructions.items.len;
+                try self.changeOperand(jump_not_truthy_pos, pos_after_consequence);
+
+                try self.compileStatement(alloc, &ast.Node(.Statement){
+                    .val = .{ .block_stmt = if_exp.alternative.?.* },
+                });
+
+                if (self.lastInstructionIsPop()) self.removeLastPop();
+
+                const pos_after_alternative = self.instructions.items.len;
+                try self.changeOperand(jump_pos, pos_after_alternative);
+            }
+        },
         else => return Error.UnknownNode,
     }
 }
@@ -305,6 +383,57 @@ test "boolean expressions" {
             .expected_instructions = @constCast(&[_]code.Instructions{
                 &(try code.make(.true, &.{})),
                 &(try code.make(.bang, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+    };
+
+    try runCompilerTests(tests);
+}
+
+test "conditionals" {
+    const tests: []const CompilerTestCase = &.{
+        .{
+            .input = "if (true) { 10 }; 3333;",
+            .expected_constants = &.{ .{ .int = 10 }, .{ .int = 3333 } },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                // 0000
+                &(try code.make(.true, &.{})),
+                // 0001
+                &(try code.make(.jump_not_truthy, &.{7})),
+                // 0004
+                &(try code.make(.constant, &.{0})),
+                // 0007
+                &(try code.make(.pop, &.{})),
+                // 0008
+                &(try code.make(.constant, &.{1})),
+                // 00011
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "if (true) { 10 } else { 20 }; 3333;",
+            .expected_constants = &.{
+                .{ .int = 10 },
+                .{ .int = 20 },
+                .{ .int = 3333 },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                // 0000
+                &(try code.make(.true, &.{})),
+                // 0001
+                &(try code.make(.jump_not_truthy, &.{10})),
+                // 0004
+                &(try code.make(.constant, &.{0})),
+                // 0007
+                &(try code.make(.jump, &.{13})),
+                // 0010
+                &(try code.make(.constant, &.{1})),
+                // 0013
+                &(try code.make(.pop, &.{})),
+                // 0014
+                &(try code.make(.constant, &.{2})),
+                // 0017
                 &(try code.make(.pop, &.{})),
             }),
         },
