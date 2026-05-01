@@ -20,6 +20,7 @@ pub const Error = error{
 const stack_size = 2048;
 const true_obj: object.Object = .{ .boolean = .{ .value = true } };
 const false_obj: object.Object = .{ .boolean = .{ .value = false } };
+const nil: object.Object = .{ .nil = .{} };
 
 constants: []const object.Object,
 instructions: code.Instructions,
@@ -71,6 +72,7 @@ pub fn run(self: *Self) !void {
                 const condition = self.pop() orelse return Error.StackExhausted;
                 if (!isTruthy(condition)) ip = @intCast(pos - 1);
             },
+            .nil => try self.push(nil),
         }
 
         ip += 1;
@@ -106,6 +108,7 @@ fn pop(self: *Self) ?object.Object {
 fn isTruthy(obj: object.Object) bool {
     return switch (obj) {
         .boolean => |bool_obj| bool_obj.value,
+        .nil => false,
         else => true,
     };
 }
@@ -174,12 +177,13 @@ fn executeIntegerComparison(self: *Self, op: code.Opcode, left: object.Object, r
 fn executeBangOperator(self: *Self) !void {
     const operand = self.pop() orelse return Error.StackExhausted;
 
-    if (@as(object.ObjectType, operand) == .boolean and operand.boolean.value == false) {
-        try self.push(true_obj);
-        return;
-    }
-
-    try self.push(false_obj);
+    try self.push(
+        switch (operand) {
+            .boolean => |bool_obj| if (bool_obj.value) false_obj else true_obj,
+            .nil => true_obj,
+            else => false_obj,
+        },
+    );
 }
 
 fn executeMinusOperator(self: *Self) !void {
@@ -194,7 +198,7 @@ fn executeMinusOperator(self: *Self) !void {
 
 const VmTestCase = struct {
     input: []const u8,
-    expected: union(enum) {
+    expected: ?union(enum) {
         int: i64,
         boolean: bool,
     },
@@ -247,6 +251,7 @@ test "boolean expressions" {
         .{ .input = "!!true", .expected = .{ .boolean = true } },
         .{ .input = "!!false", .expected = .{ .boolean = false } },
         .{ .input = "!!5", .expected = .{ .boolean = true } },
+        .{ .input = "!(if (false) { 5; })", .expected = .{ .boolean = true } },
     };
 
     try runVmTests(tests);
@@ -261,6 +266,9 @@ test "conditionals" {
         .{ .input = "if (1 < 2) { 10 }", .expected = .{ .int = 10 } },
         .{ .input = "if (1 < 2) { 10 } else { 20 }", .expected = .{ .int = 10 } },
         .{ .input = "if (1 > 2) { 10 } else { 20 }", .expected = .{ .int = 20 } },
+        .{ .input = "if (1 > 2) { 10 }", .expected = null },
+        .{ .input = "if (false) { 10 }", .expected = null },
+        .{ .input = "if ((if (false) { 10 })) { 10 } else { 20 }", .expected = .{ .int = 20 } },
     };
 
     try runVmTests(tests);
@@ -284,7 +292,9 @@ fn testBooleanObject(expected: bool, actual: object.Object) !void {
 }
 
 fn testExpectedObject(expected: @FieldType(VmTestCase, "expected"), actual: object.Object) !void {
-    switch (expected) {
+    if (expected == null) return try std.testing.expectEqual(object.Nil{}, actual.nil);
+
+    switch (expected.?) {
         .int => |exp| try testIntegerObject(exp, actual),
         .boolean => |exp| try testBooleanObject(exp, actual),
     }

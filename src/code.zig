@@ -23,6 +23,7 @@ pub const Opcode = enum(u8) {
     bang,
     jump,
     jump_not_truthy,
+    nil,
 
     inline fn lookup(op: @This()) Definition {
         return switch (op) {
@@ -42,6 +43,7 @@ pub const Opcode = enum(u8) {
             .bang => .{ .name = "OpBang", .operand_widths = &.{} },
             .jump => .{ .name = "OpJump", .operand_widths = &.{2} },
             .jump_not_truthy => .{ .name = "OpJumpNotTruthy", .operand_widths = &.{2} },
+            .nil => .{ .name = "OpNil", .operand_widths = &.{} },
         };
     }
 

@@ -187,25 +187,24 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
 
             if (self.lastInstructionIsPop()) self.removeLastPop();
 
+            // emit with a made-up value
+            const jump_pos = try self.emit(alloc, .jump, &.{9999});
+
+            const pos_after_consequence = self.instructions.items.len;
+            try self.changeOperand(jump_not_truthy_pos, pos_after_consequence);
+
             if (if_exp.alternative == null) {
-                const pos_after_consequence = self.instructions.items.len;
-                try self.changeOperand(jump_not_truthy_pos, pos_after_consequence);
+                _ = try self.emit(alloc, .nil, &.{});
             } else {
-                // emit with a made-up value
-                const jump_pos = try self.emit(alloc, .jump, &.{9999});
-
-                const pos_after_consequence = self.instructions.items.len;
-                try self.changeOperand(jump_not_truthy_pos, pos_after_consequence);
-
                 try self.compileStatement(alloc, &ast.Node(.Statement){
                     .val = .{ .block_stmt = if_exp.alternative.?.* },
                 });
 
                 if (self.lastInstructionIsPop()) self.removeLastPop();
-
-                const pos_after_alternative = self.instructions.items.len;
-                try self.changeOperand(jump_pos, pos_after_alternative);
             }
+
+            const pos_after_alternative = self.instructions.items.len;
+            try self.changeOperand(jump_pos, pos_after_alternative);
         },
         else => return Error.UnknownNode,
     }
@@ -400,14 +399,18 @@ test "conditionals" {
                 // 0000
                 &(try code.make(.true, &.{})),
                 // 0001
-                &(try code.make(.jump_not_truthy, &.{7})),
+                &(try code.make(.jump_not_truthy, &.{10})),
                 // 0004
                 &(try code.make(.constant, &.{0})),
                 // 0007
+                &(try code.make(.jump, &.{11})),
+                // 0010
+                &(try code.make(.nil, &.{})),
+                // 0011
                 &(try code.make(.pop, &.{})),
-                // 0008
+                // 0012
                 &(try code.make(.constant, &.{1})),
-                // 00011
+                // 0015
                 &(try code.make(.pop, &.{})),
             }),
         },
