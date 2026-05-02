@@ -308,6 +308,10 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
             const symbol = self.symbol_table.resolve(ident_exp.value) orelse return Error.UndefinedVariable;
             _ = try self.emit(alloc, .get_global, &.{symbol.index});
         },
+        .string_literal => |str_exp| {
+            const str: object.Object = .{ .string = .{ .value = str_exp.value } };
+            _ = try self.emit(alloc, .constant, &.{try self.addConstant(alloc, str)});
+        },
         else => return Error.UnknownNode,
     }
 }
@@ -337,6 +341,7 @@ const CompilerTestCase = struct {
     input: []const u8,
     expected_constants: []const union(enum) {
         int: usize,
+        str: []const u8,
     },
     expected_instructions: []code.Instructions,
 };
@@ -593,6 +598,31 @@ test "global let statements" {
     try runCompilerTests(tests);
 }
 
+test "string expressions" {
+    const tests: []const CompilerTestCase = &.{
+        .{
+            .input = "\"monkey\"",
+            .expected_constants = &.{.{ .str = "monkey" }},
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "\"mon\" + \"key\"",
+            .expected_constants = &.{ .{ .str = "mon" }, .{ .str = "key" } },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.add, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+    };
+
+    try runCompilerTests(tests);
+}
+
 fn parse(alloc: std.mem.Allocator, input: []const u8) !struct { ast.Node(.Common), Parser } {
     var l = Lexer.init(input);
     var p = Parser.init(&l);
@@ -629,12 +659,18 @@ fn testIntegerObject(expected: i64, actual: object.Object) !void {
     try std.testing.expectEqual(expected, actual.integer.value);
 }
 
+fn testStringObject(expected: []const u8, actual: object.Object) !void {
+    try std.testing.expectEqual(object.ObjectType.string, @as(object.ObjectType, actual));
+    try std.testing.expectEqualStrings(expected, actual.string.value);
+}
+
 fn testConstants(expected: @FieldType(CompilerTestCase, "expected_constants"), actual: []const object.Object) !void {
     try std.testing.expectEqual(expected.len, actual.len);
 
     for (expected, actual) |exp_const, act_const| {
         switch (exp_const) {
             .int => |exp| try testIntegerObject(@intCast(exp), act_const),
+            .str => |exp| try testStringObject(exp, act_const), // TODO
         }
     }
 }

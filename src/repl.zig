@@ -83,8 +83,8 @@ fn printParserErrors(out: *std.Io.Writer, errors: std.ArrayList([]const u8)) !vo
 }
 
 test start {
-    const input = "let a = 5;\nlet b = a + 5;\nexit\n";
-    const expected = ">> 5\n>> 10\n";
+    const input = "let a = \"mon\";\nlet b = a + \"key\";\nexit\n";
+    const expected = ">> mon\n>> monkey\n";
 
     const alloc = std.testing.allocator;
 

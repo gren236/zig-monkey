@@ -19,6 +19,7 @@ pub const Error = error{
 
 const stack_size = 2048;
 const globals_size = 65536;
+const string_arena_size = 1024 * 1024 * 5; // 5mb
 
 const true_obj: object.Object = .{ .boolean = .{ .value = true } };
 const false_obj: object.Object = .{ .boolean = .{ .value = false } };
@@ -27,13 +28,21 @@ const nil: object.Object = .{ .nil = .{} };
 stack: [stack_size]object.Object,
 sp: usize, // Always points to the next value. Top of stack is stack[sp-1]
 globals: [globals_size]object.Object,
+string_arena: [string_arena_size]u8,
+string_alloc: std.mem.Allocator,
 
 pub fn init() Self {
-    return .{
+    var result: Self = .{
         .stack = @splat(nil),
         .sp = 0,
         .globals = @splat(nil),
+        .string_arena = undefined,
+        .string_alloc = undefined,
     };
+    var fixed_str_alloc: std.heap.FixedBufferAllocator = .init(&result.string_arena);
+    result.string_alloc = fixed_str_alloc.allocator();
+
+    return result;
 }
 
 pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
@@ -133,9 +142,13 @@ fn executeBinaryOperation(self: *Self, op: code.Opcode) !void {
     const left_type = @as(object.ObjectType, left);
     const right_type = @as(object.ObjectType, right);
 
-    if (left_type != .integer or right_type != .integer) return Error.UnsupportedOperationTypes;
+    if (left_type == .integer and right_type == .integer)
+        return try self.executeBinaryIntegerOperation(op, left, right);
 
-    try self.executeBinaryIntegerOperation(op, left, right);
+    if (left_type == .string and right_type == .string)
+        return try self.executeBinaryStringOperation(op, left, right);
+
+    return Error.UnsupportedOperationTypes;
 }
 
 fn executeBinaryIntegerOperation(self: *Self, op: code.Opcode, left: object.Object, right: object.Object) !void {
@@ -150,6 +163,17 @@ fn executeBinaryIntegerOperation(self: *Self, op: code.Opcode, left: object.Obje
             .div => try std.math.divExact(i64, left_val, right_val),
             else => return Error.UnsupportedOperator,
         },
+    } });
+}
+
+fn executeBinaryStringOperation(self: *Self, op: code.Opcode, left: object.Object, right: object.Object) !void {
+    if (op != .add) return Error.UnsupportedOperationTypes;
+
+    const left_val = left.string.value;
+    const right_val = right.string.value;
+
+    try self.push(.{ .string = .{
+        .value = try std.mem.concat(self.string_alloc, u8, &.{ left_val, right_val }),
     } });
 }
 
@@ -214,6 +238,7 @@ const VmTestCase = struct {
     expected: ?union(enum) {
         int: i64,
         boolean: bool,
+        str: []const u8,
     },
 };
 
@@ -297,6 +322,21 @@ test "global let statements" {
     try runVmTests(tests);
 }
 
+test "string expressions" {
+    const tests: []const VmTestCase = &.{
+        .{ .input = "\"monkey\"", .expected = .{ .str = "monkey" } },
+        .{ .input = "\"mon\" + \"key\"", .expected = .{ .str = "monkey" } },
+        .{
+            .input = "\"mon\" + \"key\" + \"banana\"",
+            .expected = .{
+                .str = "monkeybanana",
+            },
+        },
+    };
+
+    try runVmTests(tests);
+}
+
 fn parse(alloc: std.mem.Allocator, input: []const u8) !struct { ast.Node(.Common), Parser } {
     var l = Lexer.init(input);
     var p = Parser.init(&l);
@@ -314,12 +354,18 @@ fn testBooleanObject(expected: bool, actual: object.Object) !void {
     try std.testing.expectEqual(expected, actual.boolean.value);
 }
 
+fn testStringObject(expected: []const u8, actual: object.Object) !void {
+    try std.testing.expectEqual(object.ObjectType.string, @as(object.ObjectType, actual));
+    try std.testing.expectEqualStrings(expected, actual.string.value);
+}
+
 fn testExpectedObject(expected: @FieldType(VmTestCase, "expected"), actual: object.Object) !void {
     if (expected == null) return try std.testing.expectEqual(object.Nil{}, actual.nil);
 
     switch (expected.?) {
         .int => |exp| try testIntegerObject(exp, actual),
         .boolean => |exp| try testBooleanObject(exp, actual),
+        .str => |exp| try testStringObject(exp, actual),
     }
 }
 
