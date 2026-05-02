@@ -29,5 +29,7 @@ pub fn main(init: std.process.Init) !void {
     try writer.print("Feel free to type in commands\n", .{});
     try writer.flush();
 
-    try repl.start(reader, writer);
+    var gpa: std.heap.DebugAllocator(.{}) = .init;
+    const alloc = gpa.allocator();
+    try repl.start(alloc, reader, writer);
 }

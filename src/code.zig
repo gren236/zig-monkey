@@ -24,6 +24,8 @@ pub const Opcode = enum(u8) {
     jump,
     jump_not_truthy,
     nil,
+    set_global,
+    get_global,
 
     inline fn lookup(op: @This()) Definition {
         return switch (op) {
@@ -44,6 +46,8 @@ pub const Opcode = enum(u8) {
             .jump => .{ .name = "OpJump", .operand_widths = &.{2} },
             .jump_not_truthy => .{ .name = "OpJumpNotTruthy", .operand_widths = &.{2} },
             .nil => .{ .name = "OpNil", .operand_widths = &.{} },
+            .set_global => .{ .name = "OpSetGlobal", .operand_widths = &.{2} },
+            .get_global => .{ .name = "OpGetGlobal", .operand_widths = &.{2} },
         };
     }
 

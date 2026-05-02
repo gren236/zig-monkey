@@ -8,7 +8,96 @@ const Parser = @import("parser.zig");
 
 const Self = @This();
 
-pub const Error = error{ UnknownNode, UnsupportedOperator };
+pub const Error = error{ UnknownNode, UnsupportedOperator, UndefinedVariable };
+
+const SymbolTable = struct {
+    const Scope = enum {
+        global,
+    };
+
+    const Symbol = struct {
+        name: []const u8,
+        scope: Scope,
+        index: usize,
+    };
+
+    store: std.StringHashMapUnmanaged(Symbol),
+    num_definitions: usize,
+
+    pub fn init() @This() {
+        return .{
+            .store = .empty,
+            .num_definitions = 0,
+        };
+    }
+
+    pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
+        var iter = self.store.iterator();
+        while (iter.next()) |entry| {
+            alloc.free(entry.key_ptr.*);
+        }
+
+        self.store.deinit(alloc);
+    }
+
+    pub fn define(self: *@This(), alloc: std.mem.Allocator, name: []const u8) !Symbol {
+        const symbol: Symbol = .{
+            .name = try alloc.dupe(u8, name),
+            .scope = .global,
+            .index = self.num_definitions,
+        };
+        errdefer alloc.free(symbol.name);
+
+        try self.store.put(alloc, symbol.name, symbol);
+        self.num_definitions += 1;
+
+        return symbol;
+    }
+
+    pub fn resolve(self: *@This(), name: []const u8) ?Symbol {
+        return self.store.get(name);
+    }
+
+    test define {
+        const expected: std.StaticStringMap(Symbol) = .initComptime(
+            .{
+                .{ "a", Symbol{ .name = "a", .scope = .global, .index = 0 } },
+                .{ "b", Symbol{ .name = "b", .scope = .global, .index = 1 } },
+            },
+        );
+
+        const alloc = std.testing.allocator;
+
+        var global: @This() = .init();
+        defer global.deinit(alloc);
+
+        const a = try global.define(alloc, "a");
+        try std.testing.expectEqualDeep(expected.get("a"), a);
+
+        const b = try global.define(alloc, "b");
+        try std.testing.expectEqualDeep(expected.get("b"), b);
+    }
+
+    test resolve {
+        const alloc = std.testing.allocator;
+        var global: @This() = .init();
+        defer global.deinit(alloc);
+
+        _ = try global.define(alloc, "a");
+        _ = try global.define(alloc, "b");
+
+        const expected = [_]Symbol{
+            .{ .name = "a", .scope = .global, .index = 0 },
+            .{ .name = "b", .scope = .global, .index = 1 },
+        };
+
+        for (expected) |sym| {
+            const result = global.resolve(sym.name);
+            try std.testing.expect(result != null);
+            try std.testing.expectEqualDeep(sym, result);
+        }
+    }
+};
 
 const EmittedInstruction = struct {
     opcode: code.Opcode,
@@ -17,6 +106,7 @@ const EmittedInstruction = struct {
 
 instructions: std.ArrayList(u8),
 constants: std.ArrayList(object.Object),
+symbol_table: SymbolTable,
 
 last_instruction: EmittedInstruction,
 previous_instruction: EmittedInstruction,
@@ -25,6 +115,7 @@ pub fn init() Self {
     return .{
         .instructions = .empty,
         .constants = .empty,
+        .symbol_table = .init(),
         .last_instruction = std.mem.zeroInit(EmittedInstruction, .{}),
         .previous_instruction = std.mem.zeroInit(EmittedInstruction, .{}),
     };
@@ -37,6 +128,8 @@ pub fn deinit(self: *Self, alloc: std.mem.Allocator) void {
         obj.deinit(alloc);
     }
     self.constants.deinit(alloc);
+
+    self.symbol_table.deinit(alloc);
 }
 
 fn addConstant(self: *Self, alloc: std.mem.Allocator, obj: object.Object) !usize {
@@ -113,6 +206,11 @@ fn compileStatement(self: *Self, alloc: std.mem.Allocator, node: *const ast.Node
             for (stmt.statements) |b_stmt| {
                 try self.compileStatement(alloc, &b_stmt);
             }
+        },
+        .let_stmt => |stmt| {
+            try self.compileExpression(alloc, stmt.value);
+            const symbol = try self.symbol_table.define(alloc, stmt.name.value);
+            _ = try self.emit(alloc, .set_global, &.{symbol.index});
         },
         else => return Error.UnknownNode,
     }
@@ -206,6 +304,10 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
             const pos_after_alternative = self.instructions.items.len;
             try self.changeOperand(jump_pos, pos_after_alternative);
         },
+        .ident => |ident_exp| {
+            const symbol = self.symbol_table.resolve(ident_exp.value) orelse return Error.UndefinedVariable;
+            _ = try self.emit(alloc, .get_global, &.{symbol.index});
+        },
         else => return Error.UnknownNode,
     }
 }
@@ -215,11 +317,18 @@ pub const Bytecode = struct {
     constants: []const object.Object,
 };
 
+// bake the processed bytecode
 pub fn bytecode(self: *Self) Bytecode {
     return .{
         .instructions = self.instructions.items,
         .constants = self.constants.items,
     };
+}
+
+pub fn resetInstructions(self: *Self) void {
+    self.instructions.clearRetainingCapacity();
+    self.last_instruction = std.mem.zeroInit(EmittedInstruction, .{});
+    self.previous_instruction = std.mem.zeroInit(EmittedInstruction, .{});
 }
 
 // Testing
@@ -445,11 +554,50 @@ test "conditionals" {
     try runCompilerTests(tests);
 }
 
-fn parse(alloc: std.mem.Allocator, input: []const u8) !ast.Node(.Common) {
+test "global let statements" {
+    const tests: []const CompilerTestCase = &.{
+        .{
+            .input = "let one = 1; let two = 2;",
+            .expected_constants = &.{ .{ .int = 1 }, .{ .int = 2 } },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.set_global, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.set_global, &.{1})),
+            }),
+        },
+        .{
+            .input = "let one = 1; one;",
+            .expected_constants = &.{.{ .int = 1 }},
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.set_global, &.{0})),
+                &(try code.make(.get_global, &.{0})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "let one = 1; let two = one; two;",
+            .expected_constants = &.{.{ .int = 1 }},
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.set_global, &.{0})),
+                &(try code.make(.get_global, &.{0})),
+                &(try code.make(.set_global, &.{1})),
+                &(try code.make(.get_global, &.{1})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+    };
+
+    try runCompilerTests(tests);
+}
+
+fn parse(alloc: std.mem.Allocator, input: []const u8) !struct { ast.Node(.Common), Parser } {
     var l = Lexer.init(input);
     var p = Parser.init(&l);
 
-    return ast.Node(.Common){ .val = .{ .program = try p.parseProgram(alloc) } };
+    return .{ ast.Node(.Common){ .val = .{ .program = try p.parseProgram(alloc) } }, p };
 }
 
 fn testErrorInstructionsOutput(expected: code.Instructions, actual: code.Instructions) !void {
@@ -492,20 +640,22 @@ fn testConstants(expected: @FieldType(CompilerTestCase, "expected_constants"), a
 }
 
 fn runCompilerTests(tests: []const CompilerTestCase) !void {
-    const talloc = std.testing.allocator;
+    const alloc = std.testing.allocator;
 
     for (tests) |tt| {
-        var arena = std.heap.ArenaAllocator.init(talloc);
-        defer arena.deinit();
-        const alloc = arena.allocator();
+        var program, var p = try parse(alloc, tt.input);
+        defer program.val.program.deinit(alloc);
+        defer p.deinit(alloc);
 
-        const program = try parse(alloc, tt.input);
         var compiler = init();
+        defer compiler.deinit(alloc);
 
         try compiler.compile(alloc, program);
 
         const bcode = compiler.bytecode();
         const exp_instructions = try std.mem.concat(alloc, u8, tt.expected_instructions);
+        defer alloc.free(exp_instructions);
+
         try testInstructions(exp_instructions, bcode.instructions);
         try testConstants(tt.expected_constants, bcode.constants);
     }

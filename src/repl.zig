@@ -23,15 +23,19 @@ const monkey_face =
     \\
 ;
 
-pub fn start(in: *std.Io.Reader, out: *std.Io.Writer) !void {
-    var gpa: std.heap.DebugAllocator(.{}) = .init;
-    const alloc = gpa.allocator();
+pub fn start(alloc: std.mem.Allocator, in: *std.Io.Reader, out: *std.Io.Writer) !void {
+    var comp: Compiler = .init();
+    defer comp.deinit(alloc);
+
+    var machine = Vm.init();
 
     while (true) {
         try out.print(prompt, .{});
         try out.flush();
 
         const line = try in.takeDelimiter('\n') orelse continue;
+
+        if (std.mem.eql(u8, line, "exit")) return;
 
         var arena = std.heap.ArenaAllocator.init(alloc);
         defer arena.deinit();
@@ -49,15 +53,14 @@ pub fn start(in: *std.Io.Reader, out: *std.Io.Writer) !void {
             continue;
         }
 
-        var comp: Compiler = .init();
-        defer comp.deinit(iter_alloc);
-        comp.compile(iter_alloc, .{ .val = .{ .program = program } }) catch |err| {
+        comp.compile(alloc, .{ .val = .{ .program = program } }) catch |err| {
             std.debug.print("Compilation error: {t}\n", .{err});
             continue;
         };
+        defer comp.resetInstructions();
 
-        var machine = Vm.init(comp.bytecode());
-        machine.run() catch |err| {
+        const bcode = comp.bytecode();
+        machine.run(bcode) catch |err| {
             std.debug.print("VM run error: {t}\n", .{err});
             continue;
         };
@@ -77,4 +80,18 @@ fn printParserErrors(out: *std.Io.Writer, errors: std.ArrayList([]const u8)) !vo
     for (errors.items) |err| {
         try out.print("\t{s}\n", .{err});
     }
+}
+
+test start {
+    const input = "let a = 5;\nlet b = a + 5;\nexit\n";
+    const expected = ">> 5\n>> 10\n";
+
+    const alloc = std.testing.allocator;
+
+    var in = std.Io.Reader.fixed(input);
+    var actual_buf: [1024]u8 = undefined;
+    var out = std.Io.Writer.fixed(&actual_buf);
+
+    try start(alloc, &in, &out);
+    try std.testing.expectEqualStrings(expected, actual_buf[0..expected.len]);
 }

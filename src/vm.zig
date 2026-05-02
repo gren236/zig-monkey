@@ -18,38 +18,37 @@ pub const Error = error{
 };
 
 const stack_size = 2048;
+const globals_size = 65536;
+
 const true_obj: object.Object = .{ .boolean = .{ .value = true } };
 const false_obj: object.Object = .{ .boolean = .{ .value = false } };
 const nil: object.Object = .{ .nil = .{} };
 
-constants: []const object.Object,
-instructions: code.Instructions,
-
 stack: [stack_size]object.Object,
 sp: usize, // Always points to the next value. Top of stack is stack[sp-1]
+globals: [globals_size]object.Object,
 
-pub fn init(bytecode: Compiler.Bytecode) Self {
+pub fn init() Self {
     return .{
-        .instructions = bytecode.instructions,
-        .constants = bytecode.constants,
-        .stack = .{object.Object{ .nil = .{} }} ** stack_size,
+        .stack = @splat(nil),
         .sp = 0,
+        .globals = @splat(nil),
     };
 }
 
-pub fn run(self: *Self) !void {
+pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
     var ip: usize = 0;
-    while (ip < self.instructions.len) {
-        const op = std.enums.fromInt(code.Opcode, self.instructions[ip]) orelse
+    while (ip < bytecode.instructions.len) {
+        const op = std.enums.fromInt(code.Opcode, bytecode.instructions[ip]) orelse
             return Error.UnknownOpcode;
 
         switch (op) {
             .constant => {
                 const width = 2;
-                const const_index = code.readOperandInt(width, self.instructions[ip + 1 ..][0..width]);
+                const const_index = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
                 ip += width;
 
-                try self.push(self.constants[const_index]);
+                try self.push(bytecode.constants[const_index]);
             },
             .add, .sub, .mul, .div => try self.executeBinaryOperation(op),
             .true => try self.push(true_obj),
@@ -60,17 +59,31 @@ pub fn run(self: *Self) !void {
             .pop => _ = self.pop(),
             .jump => {
                 const width = 2;
-                const pos = code.readOperandInt(width, self.instructions[ip + 1 ..][0..width]);
+                const pos = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
 
                 ip = @intCast(pos - 1);
             },
             .jump_not_truthy => {
                 const width = 2;
-                const pos = code.readOperandInt(width, self.instructions[ip + 1 ..][0..width]);
+                const pos = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
                 ip += width;
 
                 const condition = self.pop() orelse return Error.StackExhausted;
                 if (!isTruthy(condition)) ip = @intCast(pos - 1);
+            },
+            .set_global => {
+                const width = 2;
+                const global_index = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
+                ip += width;
+
+                self.globals[global_index] = self.pop() orelse nil;
+            },
+            .get_global => {
+                const width = 2;
+                const global_index = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
+                ip += width;
+
+                try self.push(self.globals[global_index]);
             },
             .nil => try self.push(nil),
         }
@@ -274,11 +287,21 @@ test "conditionals" {
     try runVmTests(tests);
 }
 
-fn parse(alloc: std.mem.Allocator, input: []const u8) !ast.Node(.Common) {
+test "global let statements" {
+    const tests: []const VmTestCase = &.{
+        .{ .input = "let one = 1; one", .expected = .{ .int = 1 } },
+        .{ .input = "let one = 1; let two = 2; one + two", .expected = .{ .int = 3 } },
+        .{ .input = "let one = 1; let two = one + one; one + two", .expected = .{ .int = 3 } },
+    };
+
+    try runVmTests(tests);
+}
+
+fn parse(alloc: std.mem.Allocator, input: []const u8) !struct { ast.Node(.Common), Parser } {
     var l = Lexer.init(input);
     var p = Parser.init(&l);
 
-    return ast.Node(.Common){ .val = .{ .program = try p.parseProgram(alloc) } };
+    return .{ ast.Node(.Common){ .val = .{ .program = try p.parseProgram(alloc) } }, p };
 }
 
 fn testIntegerObject(expected: i64, actual: object.Object) !void {
@@ -301,20 +324,21 @@ fn testExpectedObject(expected: @FieldType(VmTestCase, "expected"), actual: obje
 }
 
 fn runVmTests(tests: []const VmTestCase) !void {
-    const talloc = std.testing.allocator;
+    const alloc = std.testing.allocator;
 
     for (tests) |tt| {
-        var arena = std.heap.ArenaAllocator.init(talloc);
-        defer arena.deinit();
-        const alloc = arena.allocator();
+        var program, var p = try parse(alloc, tt.input);
+        defer program.val.program.deinit(alloc);
+        defer p.deinit(alloc);
 
-        const program = try parse(alloc, tt.input);
         var compiler = Compiler.init();
+        defer compiler.deinit(alloc);
 
         try compiler.compile(alloc, program);
 
-        var vm = init(compiler.bytecode());
-        try vm.run();
+        const bcode = compiler.bytecode();
+        var vm = init();
+        try vm.run(bcode);
 
         const stack_elem = vm.lastPoppedStackElem();
 
