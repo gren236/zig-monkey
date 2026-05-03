@@ -27,7 +27,8 @@ pub fn start(alloc: std.mem.Allocator, in: *std.Io.Reader, out: *std.Io.Writer) 
     var comp: Compiler = .init();
     defer comp.deinit(alloc);
 
-    var machine = Vm.init();
+    var machine = try Vm.create(alloc);
+    defer machine.destroy(alloc);
 
     while (true) {
         try out.print(prompt, .{});

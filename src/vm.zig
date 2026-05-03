@@ -20,6 +20,7 @@ pub const Error = error{
 const stack_size = 2048;
 const globals_size = 65536;
 const string_arena_size = 1024 * 1024 * 5; // 5mb
+const array_arena_size = 1024 * 1024 * 5; // 5mb
 
 const true_obj: object.Object = .{ .boolean = .{ .value = true } };
 const false_obj: object.Object = .{ .boolean = .{ .value = false } };
@@ -29,20 +30,33 @@ stack: [stack_size]object.Object,
 sp: usize, // Always points to the next value. Top of stack is stack[sp-1]
 globals: [globals_size]object.Object,
 string_arena: [string_arena_size]u8,
-string_alloc: std.mem.Allocator,
+string_fba: std.heap.FixedBufferAllocator,
+array_arena: [array_arena_size]u8,
+array_fba: std.heap.FixedBufferAllocator,
 
-pub fn init() Self {
-    var result: Self = .{
+pub fn create(alloc: std.mem.Allocator) !*Self {
+    const self = try alloc.create(Self);
+
+    self.* = .{
         .stack = @splat(nil),
         .sp = 0,
-        .globals = @splat(nil),
-        .string_arena = undefined,
-        .string_alloc = undefined,
-    };
-    var fixed_str_alloc: std.heap.FixedBufferAllocator = .init(&result.string_arena);
-    result.string_alloc = fixed_str_alloc.allocator();
 
-    return result;
+        .globals = @splat(nil),
+
+        .string_arena = undefined,
+        .string_fba = undefined,
+        .array_arena = undefined,
+        .array_fba = undefined,
+    };
+
+    self.string_fba = .init(&self.string_arena);
+    self.array_fba = .init(&self.array_arena);
+
+    return self;
+}
+
+pub fn destroy(self: *Self, alloc: std.mem.Allocator) void {
+    alloc.destroy(self);
 }
 
 pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
@@ -93,6 +107,14 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
                 ip += width;
 
                 try self.push(self.globals[global_index]);
+            },
+            .array => {
+                const width = 2;
+                const num_elements = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
+                ip += width;
+
+                const array = try self.buildArray(self.sp - num_elements, self.sp);
+                try self.push(array);
             },
             .nil => try self.push(nil),
         }
@@ -173,7 +195,7 @@ fn executeBinaryStringOperation(self: *Self, op: code.Opcode, left: object.Objec
     const right_val = right.string.value;
 
     try self.push(.{ .string = .{
-        .value = try std.mem.concat(self.string_alloc, u8, &.{ left_val, right_val }),
+        .value = try std.mem.concat(self.string_fba.allocator(), u8, &.{ left_val, right_val }),
     } });
 }
 
@@ -231,6 +253,17 @@ fn executeMinusOperator(self: *Self) !void {
     try self.push(.{ .integer = .{ .value = -operand.integer.value } });
 }
 
+fn buildArray(self: *Self, start_index: usize, end_index: usize) !object.Object {
+    var alloc = self.array_fba.allocator();
+    var elements = try alloc.alloc(object.Object, end_index - start_index);
+
+    for (start_index..end_index) |i| {
+        elements[i - start_index] = self.stack[i];
+    }
+
+    return .{ .array = .{ .elements = elements } };
+}
+
 // Testing
 
 const VmTestCase = struct {
@@ -239,6 +272,7 @@ const VmTestCase = struct {
         int: i64,
         boolean: bool,
         str: []const u8,
+        arr: []const i64,
     },
 };
 
@@ -337,6 +371,16 @@ test "string expressions" {
     try runVmTests(tests);
 }
 
+test "array literals" {
+    const tests: []const VmTestCase = &.{
+        .{ .input = "[]", .expected = .{ .arr = &.{} } },
+        .{ .input = "[1, 2, 3]", .expected = .{ .arr = &.{ 1, 2, 3 } } },
+        .{ .input = "[1 + 2, 3 * 4, 5 + 6]", .expected = .{ .arr = &.{ 3, 12, 11 } } },
+    };
+
+    try runVmTests(tests);
+}
+
 fn parse(alloc: std.mem.Allocator, input: []const u8) !struct { ast.Node(.Common), Parser } {
     var l = Lexer.init(input);
     var p = Parser.init(&l);
@@ -366,6 +410,14 @@ fn testExpectedObject(expected: @FieldType(VmTestCase, "expected"), actual: obje
         .int => |exp| try testIntegerObject(exp, actual),
         .boolean => |exp| try testBooleanObject(exp, actual),
         .str => |exp| try testStringObject(exp, actual),
+        .arr => |exp| {
+            try std.testing.expectEqual(object.ObjectType.array, @as(object.ObjectType, actual));
+            const act_arr = actual.array;
+            try std.testing.expectEqual(exp.len, act_arr.elements.len);
+            for (exp, act_arr.elements) |exp_elem, act_elem| {
+                try testIntegerObject(exp_elem, act_elem);
+            }
+        },
     }
 }
 
@@ -381,9 +433,10 @@ fn runVmTests(tests: []const VmTestCase) !void {
         defer compiler.deinit(alloc);
 
         try compiler.compile(alloc, program);
-
         const bcode = compiler.bytecode();
-        var vm = init();
+
+        var vm = try create(alloc);
+        defer vm.destroy(alloc);
         try vm.run(bcode);
 
         const stack_elem = vm.lastPoppedStackElem();

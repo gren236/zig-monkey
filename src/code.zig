@@ -26,6 +26,7 @@ pub const Opcode = enum(u8) {
     nil,
     set_global,
     get_global,
+    array,
 
     inline fn lookup(op: @This()) Definition {
         return switch (op) {
@@ -48,6 +49,7 @@ pub const Opcode = enum(u8) {
             .nil => .{ .name = "OpNil", .operand_widths = &.{} },
             .set_global => .{ .name = "OpSetGlobal", .operand_widths = &.{2} },
             .get_global => .{ .name = "OpGetGlobal", .operand_widths = &.{2} },
+            .array => .{ .name = "OpArray", .operand_widths = &.{2} },
         };
     }
 

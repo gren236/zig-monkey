@@ -312,6 +312,13 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
             const str: object.Object = .{ .string = .{ .value = str_exp.value } };
             _ = try self.emit(alloc, .constant, &.{try self.addConstant(alloc, str)});
         },
+        .array_literal => |arr_exp| {
+            for (arr_exp.elements) |elem| {
+                try self.compileExpression(alloc, &elem);
+            }
+
+            _ = try self.emit(alloc, .array, &.{arr_exp.elements.len});
+        },
         else => return Error.UnknownNode,
     }
 }
@@ -615,6 +622,56 @@ test "string expressions" {
                 &(try code.make(.constant, &.{0})),
                 &(try code.make(.constant, &.{1})),
                 &(try code.make(.add, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+    };
+
+    try runCompilerTests(tests);
+}
+
+test "array literals" {
+    const tests: []const CompilerTestCase = &.{
+        .{
+            .input = "[]",
+            .expected_constants = &.{},
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.array, &.{0})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "[1, 2, 3]",
+            .expected_constants = &.{ .{ .int = 1 }, .{ .int = 2 }, .{ .int = 3 } },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.constant, &.{2})),
+                &(try code.make(.array, &.{3})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "[1 + 2, 3 - 4, 5 * 6]",
+            .expected_constants = &.{
+                .{ .int = 1 },
+                .{ .int = 2 },
+                .{ .int = 3 },
+                .{ .int = 4 },
+                .{ .int = 5 },
+                .{ .int = 6 },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.add, &.{})),
+                &(try code.make(.constant, &.{2})),
+                &(try code.make(.constant, &.{3})),
+                &(try code.make(.sub, &.{})),
+                &(try code.make(.constant, &.{4})),
+                &(try code.make(.constant, &.{5})),
+                &(try code.make(.mul, &.{})),
+                &(try code.make(.array, &.{3})),
                 &(try code.make(.pop, &.{})),
             }),
         },
