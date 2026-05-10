@@ -319,6 +319,25 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
 
             _ = try self.emit(alloc, .array, &.{arr_exp.elements.len});
         },
+        .hash_literal => |hash_exp| {
+            const keys = try alloc.alloc(ast.Node(.Expression), hash_exp.pairs.size);
+            defer alloc.free(keys);
+
+            var key_iter = hash_exp.pairs.keyIterator();
+            var i: usize = 0;
+            while (key_iter.next()) |key_ptr| : (i += 1) {
+                keys[i] = key_ptr.*;
+            }
+
+            std.mem.sort(ast.Node(.Expression), keys, {}, ast.lessThan);
+
+            for (keys) |key| {
+                try self.compileExpression(alloc, &key);
+                try self.compileExpression(alloc, &hash_exp.pairs.get(key).?);
+            }
+
+            _ = try self.emit(alloc, .hash, &.{hash_exp.pairs.size * 2});
+        },
         else => return Error.UnknownNode,
     }
 }
@@ -630,7 +649,7 @@ test "string expressions" {
     try runCompilerTests(tests);
 }
 
-test "array literals" {
+test "hash literals" {
     const tests: []const CompilerTestCase = &.{
         .{
             .input = "[]",
@@ -672,6 +691,65 @@ test "array literals" {
                 &(try code.make(.constant, &.{5})),
                 &(try code.make(.mul, &.{})),
                 &(try code.make(.array, &.{3})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+    };
+
+    try runCompilerTests(tests);
+}
+
+test "array literals" {
+    const tests: []const CompilerTestCase = &.{
+        .{
+            .input = "{}",
+            .expected_constants = &.{},
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.hash, &.{0})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "{1: 2, 3: 4, 5: 6}",
+            .expected_constants = &.{
+                .{ .int = 1 },
+                .{ .int = 2 },
+                .{ .int = 3 },
+                .{ .int = 4 },
+                .{ .int = 5 },
+                .{ .int = 6 },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.constant, &.{2})),
+                &(try code.make(.constant, &.{3})),
+                &(try code.make(.constant, &.{4})),
+                &(try code.make(.constant, &.{5})),
+                &(try code.make(.hash, &.{6})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "{1: 2 + 3, 4: 5 * 6}",
+            .expected_constants = &.{
+                .{ .int = 1 },
+                .{ .int = 2 },
+                .{ .int = 3 },
+                .{ .int = 4 },
+                .{ .int = 5 },
+                .{ .int = 6 },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.constant, &.{2})),
+                &(try code.make(.add, &.{})),
+                &(try code.make(.constant, &.{3})),
+                &(try code.make(.constant, &.{4})),
+                &(try code.make(.constant, &.{5})),
+                &(try code.make(.mul, &.{})),
+                &(try code.make(.hash, &.{4})),
                 &(try code.make(.pop, &.{})),
             }),
         },
@@ -727,7 +805,7 @@ fn testConstants(expected: @FieldType(CompilerTestCase, "expected_constants"), a
     for (expected, actual) |exp_const, act_const| {
         switch (exp_const) {
             .int => |exp| try testIntegerObject(@intCast(exp), act_const),
-            .str => |exp| try testStringObject(exp, act_const), // TODO
+            .str => |exp| try testStringObject(exp, act_const),
         }
     }
 }

@@ -21,6 +21,7 @@ const stack_size = 2048;
 const globals_size = 65536;
 const string_arena_size = 1024 * 1024 * 5; // 5mb
 const array_arena_size = 1024 * 1024 * 5; // 5mb
+const hash_arena_size = 1024 * 1024 * 5; // 5mb
 
 const true_obj: object.Object = .{ .boolean = .{ .value = true } };
 const false_obj: object.Object = .{ .boolean = .{ .value = false } };
@@ -33,6 +34,8 @@ string_arena: [string_arena_size]u8,
 string_fba: std.heap.FixedBufferAllocator,
 array_arena: [array_arena_size]u8,
 array_fba: std.heap.FixedBufferAllocator,
+hash_arena: [hash_arena_size]u8,
+hash_fba: std.heap.FixedBufferAllocator,
 
 pub fn create(alloc: std.mem.Allocator) !*Self {
     const self = try alloc.create(Self);
@@ -47,10 +50,13 @@ pub fn create(alloc: std.mem.Allocator) !*Self {
         .string_fba = undefined,
         .array_arena = undefined,
         .array_fba = undefined,
+        .hash_arena = undefined,
+        .hash_fba = undefined,
     };
 
     self.string_fba = .init(&self.string_arena);
     self.array_fba = .init(&self.array_arena);
+    self.hash_fba = .init(&self.hash_arena);
 
     return self;
 }
@@ -115,6 +121,16 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
 
                 const array = try self.buildArray(self.sp - num_elements, self.sp);
                 try self.push(array);
+            },
+            .hash => {
+                const width = 2;
+                const num_elements = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
+                ip += width;
+
+                const hash = try self.buildHash(self.sp - num_elements, self.sp);
+                self.sp = self.sp - num_elements;
+
+                try self.push(hash);
             },
             .nil => try self.push(nil),
         }
@@ -264,6 +280,23 @@ fn buildArray(self: *Self, start_index: usize, end_index: usize) !object.Object 
     return .{ .array = .{ .elements = elements } };
 }
 
+fn buildHash(self: *Self, start_index: usize, end_index: usize) !object.Object {
+    const alloc = self.hash_fba.allocator();
+    var pairs: object.HashMap = .empty;
+
+    var i = start_index;
+    while (i < end_index) {
+        const key = try self.stack[i].toHashable();
+        const val = self.stack[i + 1];
+
+        try pairs.put(alloc, key, val);
+
+        i += 2;
+    }
+
+    return .{ .hash = .{ .pairs = pairs } };
+}
+
 // Testing
 
 const VmTestCase = struct {
@@ -273,6 +306,10 @@ const VmTestCase = struct {
         boolean: bool,
         str: []const u8,
         arr: []const i64,
+        hash: []const struct {
+            key: object.Hashable,
+            val: i64,
+        },
     },
 };
 
@@ -381,6 +418,31 @@ test "array literals" {
     try runVmTests(tests);
 }
 
+test "hash literals" {
+    const tests: []const VmTestCase = &.{
+        .{
+            .input = "{}",
+            .expected = .{ .hash = &.{} },
+        },
+        .{
+            .input = "{1: 2, 2: 3}",
+            .expected = .{ .hash = &.{
+                .{ .key = .{ .integer = .{ .value = 1 } }, .val = 2 },
+                .{ .key = .{ .integer = .{ .value = 2 } }, .val = 3 },
+            } },
+        },
+        .{
+            .input = "{1 + 1: 2 * 2, 3 + 3: 4 * 4}",
+            .expected = .{ .hash = &.{
+                .{ .key = .{ .integer = .{ .value = 2 } }, .val = 4 },
+                .{ .key = .{ .integer = .{ .value = 6 } }, .val = 16 },
+            } },
+        },
+    };
+
+    try runVmTests(tests);
+}
+
 fn parse(alloc: std.mem.Allocator, input: []const u8) !struct { ast.Node(.Common), Parser } {
     var l = Lexer.init(input);
     var p = Parser.init(&l);
@@ -416,6 +478,17 @@ fn testExpectedObject(expected: @FieldType(VmTestCase, "expected"), actual: obje
             try std.testing.expectEqual(exp.len, act_arr.elements.len);
             for (exp, act_arr.elements) |exp_elem, act_elem| {
                 try testIntegerObject(exp_elem, act_elem);
+            }
+        },
+        .hash => |exp| {
+            try std.testing.expectEqual(object.ObjectType.hash, @as(object.ObjectType, actual));
+            const act_hash = actual.hash;
+            try std.testing.expectEqual(exp.len, act_hash.pairs.size);
+            for (exp) |exp_item| {
+                const val = act_hash.pairs.get(exp_item.key);
+                try std.testing.expect(val != null);
+
+                try testIntegerObject(exp_item.val, val.?);
             }
         },
     }

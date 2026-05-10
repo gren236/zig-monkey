@@ -70,6 +70,22 @@ pub fn Node(comptime T: NodeType) type {
     };
 }
 
+pub fn lessThan(_: void, a: Node(.Expression), b: Node(.Expression)) bool {
+    var buf_a: [1024]u8 = undefined;
+    const out_a = &buf_a;
+    var writer_a: std.Io.Writer = .fixed(out_a);
+    var buf_b: [1024]u8 = undefined;
+    const out_b = &buf_b;
+    var writer_b: std.Io.Writer = .fixed(out_b);
+
+    a.writeString(&writer_a) catch return false;
+    writer_a.flush() catch return false;
+    b.writeString(&writer_b) catch return false;
+    writer_b.flush() catch return false;
+
+    return std.mem.lessThan(u8, out_a, out_b);
+}
+
 pub const ExpressionHashContext = struct {
     pub fn hash(_: @This(), key: Node(.Expression)) u64 {
         var hasher = std.hash.Wyhash.init(0);
