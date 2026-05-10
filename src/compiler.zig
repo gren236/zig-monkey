@@ -338,6 +338,12 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
 
             _ = try self.emit(alloc, .hash, &.{hash_exp.pairs.size * 2});
         },
+        .index_exp => |index_exp| {
+            try self.compileExpression(alloc, index_exp.left);
+            try self.compileExpression(alloc, index_exp.index);
+
+            _ = try self.emit(alloc, .index, &.{});
+        },
         else => return Error.UnknownNode,
     }
 }
@@ -649,7 +655,7 @@ test "string expressions" {
     try runCompilerTests(tests);
 }
 
-test "hash literals" {
+test "array literals" {
     const tests: []const CompilerTestCase = &.{
         .{
             .input = "[]",
@@ -699,7 +705,7 @@ test "hash literals" {
     try runCompilerTests(tests);
 }
 
-test "array literals" {
+test "hash literals" {
     const tests: []const CompilerTestCase = &.{
         .{
             .input = "{}",
@@ -750,6 +756,53 @@ test "array literals" {
                 &(try code.make(.constant, &.{5})),
                 &(try code.make(.mul, &.{})),
                 &(try code.make(.hash, &.{4})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+    };
+
+    try runCompilerTests(tests);
+}
+
+test "index expressions" {
+    const tests: []const CompilerTestCase = &.{
+        .{
+            .input = "[1, 2, 3][1 + 1]",
+            .expected_constants = &.{
+                .{ .int = 1 },
+                .{ .int = 2 },
+                .{ .int = 3 },
+                .{ .int = 1 },
+                .{ .int = 1 },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.constant, &.{2})),
+                &(try code.make(.array, &.{3})),
+                &(try code.make(.constant, &.{3})),
+                &(try code.make(.constant, &.{4})),
+                &(try code.make(.add, &.{})),
+                &(try code.make(.index, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "{1: 2}[2 - 1]",
+            .expected_constants = &.{
+                .{ .int = 1 },
+                .{ .int = 2 },
+                .{ .int = 2 },
+                .{ .int = 1 },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.hash, &.{2})),
+                &(try code.make(.constant, &.{2})),
+                &(try code.make(.constant, &.{3})),
+                &(try code.make(.sub, &.{})),
+                &(try code.make(.index, &.{})),
                 &(try code.make(.pop, &.{})),
             }),
         },

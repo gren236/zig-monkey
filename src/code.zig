@@ -28,6 +28,7 @@ pub const Opcode = enum(u8) {
     get_global,
     array,
     hash,
+    index,
 
     inline fn lookup(op: @This()) Definition {
         return switch (op) {
@@ -52,6 +53,7 @@ pub const Opcode = enum(u8) {
             .get_global => .{ .name = "OpGetGlobal", .operand_widths = &.{2} },
             .array => .{ .name = "OpArray", .operand_widths = &.{2} },
             .hash => .{ .name = "OpHash", .operand_widths = &.{2} },
+            .index => .{ .name = "OpIndex", .operand_widths = &.{} },
         };
     }
 

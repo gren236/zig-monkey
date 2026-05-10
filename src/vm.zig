@@ -15,6 +15,7 @@ pub const Error = error{
     StackExhausted,
     UnsupportedOperationTypes,
     UnsupportedOperator,
+    UnsupportedIndexOperator,
 };
 
 const stack_size = 2048;
@@ -131,6 +132,12 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
                 self.sp = self.sp - num_elements;
 
                 try self.push(hash);
+            },
+            .index => {
+                const index = self.pop() orelse return Error.StackExhausted;
+                const left = self.pop() orelse return Error.StackExhausted;
+
+                try self.executeIndexExpression(left, index);
             },
             .nil => try self.push(nil),
         }
@@ -267,6 +274,40 @@ fn executeMinusOperator(self: *Self) !void {
     if (@as(object.ObjectType, operand) != .integer) return Error.UnsupportedOperator;
 
     try self.push(.{ .integer = .{ .value = -operand.integer.value } });
+}
+
+fn executeIndexExpression(self: *Self, left: object.Object, index: object.Object) !void {
+    return switch (left) {
+        .array => {
+            if (@as(object.ObjectType, index) != .integer) return Error.UnsupportedIndexOperator;
+
+            try self.executeArrayIndex(left, index);
+        },
+        .hash => {
+            try self.executeHashIndex(left, index);
+        },
+        else => Error.UnsupportedIndexOperator,
+    };
+}
+
+fn executeArrayIndex(self: *Self, left: object.Object, index: object.Object) !void {
+    const arr = left.array;
+    const i = index.integer.value;
+    const len: i64 = @intCast(arr.elements.len);
+    const max = len - 1;
+
+    if (i < 0 or i > max) return try self.push(nil);
+
+    return try self.push(arr.elements[@intCast(i)]);
+}
+
+fn executeHashIndex(self: *Self, left: object.Object, index: object.Object) !void {
+    const hash = left.hash;
+    const key = try index.toHashable();
+
+    const val = hash.pairs.get(key) orelse return try self.push(nil);
+
+    return self.push(val);
 }
 
 fn buildArray(self: *Self, start_index: usize, end_index: usize) !object.Object {
@@ -438,6 +479,23 @@ test "hash literals" {
                 .{ .key = .{ .integer = .{ .value = 6 } }, .val = 16 },
             } },
         },
+    };
+
+    try runVmTests(tests);
+}
+
+test "index expressions" {
+    const tests: []const VmTestCase = &.{
+        .{ .input = "[1, 2, 3][1]", .expected = .{ .int = 2 } },
+        .{ .input = "[1, 2, 3][0 + 2]", .expected = .{ .int = 3 } },
+        .{ .input = "[[1, 1, 1]][0][0]", .expected = .{ .int = 1 } },
+        .{ .input = "[][0]", .expected = null },
+        .{ .input = "[1, 2, 3][99]", .expected = null },
+        .{ .input = "[1][-1]", .expected = null },
+        .{ .input = "{1: 1, 2: 2}[1]", .expected = .{ .int = 1 } },
+        .{ .input = "{1: 1, 2: 2}[2]", .expected = .{ .int = 2 } },
+        .{ .input = "{1: 1}[0]", .expected = null },
+        .{ .input = "{}[0]", .expected = null },
     };
 
     try runVmTests(tests);
