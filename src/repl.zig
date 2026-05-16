@@ -24,7 +24,7 @@ const monkey_face =
 ;
 
 pub fn start(alloc: std.mem.Allocator, in: *std.Io.Reader, out: *std.Io.Writer) !void {
-    var comp: Compiler = .init();
+    var comp: Compiler = try .init(alloc);
     defer comp.deinit(alloc);
 
     var machine = try Vm.create(alloc);

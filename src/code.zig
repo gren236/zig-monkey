@@ -29,6 +29,9 @@ pub const Opcode = enum(u8) {
     array,
     hash,
     index,
+    call,
+    return_value,
+    @"return",
 
     inline fn lookup(op: @This()) Definition {
         return switch (op) {
@@ -54,6 +57,9 @@ pub const Opcode = enum(u8) {
             .array => .{ .name = "OpArray", .operand_widths = &.{2} },
             .hash => .{ .name = "OpHash", .operand_widths = &.{2} },
             .index => .{ .name = "OpIndex", .operand_widths = &.{} },
+            .call => .{ .name = "OpCall", .operand_widths = &.{} },
+            .return_value => .{ .name = "OpReturnValue", .operand_widths = &.{} },
+            .@"return" => .{ .name = "OpReturn", .operand_widths = &.{} },
         };
     }
 

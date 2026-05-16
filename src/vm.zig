@@ -560,7 +560,7 @@ fn runVmTests(tests: []const VmTestCase) !void {
         defer program.val.program.deinit(alloc);
         defer p.deinit(alloc);
 
-        var compiler = Compiler.init();
+        var compiler: Compiler = try .init(alloc);
         defer compiler.deinit(alloc);
 
         try compiler.compile(alloc, program);

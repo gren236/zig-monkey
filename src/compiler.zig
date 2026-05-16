@@ -8,7 +8,7 @@ const Parser = @import("parser.zig");
 
 const Self = @This();
 
-pub const Error = error{ UnknownNode, UnsupportedOperator, UndefinedVariable };
+pub const Error = error{ UnknownNode, UnsupportedOperator, UndefinedVariable, ScopeStackExhausted };
 
 const SymbolTable = struct {
     const Scope = enum {
@@ -104,25 +104,43 @@ const EmittedInstruction = struct {
     position: usize,
 };
 
-instructions: std.ArrayList(u8),
+const CompilationScope = struct {
+    instructions: std.ArrayList(u8),
+    last_instruction: EmittedInstruction,
+    previous_instruction: EmittedInstruction,
+};
+
+scopes: std.ArrayList(CompilationScope),
+scopeIndex: usize,
+
 constants: std.ArrayList(object.Object),
 symbol_table: SymbolTable,
 
-last_instruction: EmittedInstruction,
-previous_instruction: EmittedInstruction,
-
-pub fn init() Self {
-    return .{
+pub fn init(alloc: std.mem.Allocator) !Self {
+    const main_scope: CompilationScope = .{
         .instructions = .empty,
-        .constants = .empty,
-        .symbol_table = .init(),
         .last_instruction = std.mem.zeroInit(EmittedInstruction, .{}),
         .previous_instruction = std.mem.zeroInit(EmittedInstruction, .{}),
     };
+
+    var self: Self = .{
+        .constants = .empty,
+        .symbol_table = .init(),
+        .scopes = .empty,
+        .scopeIndex = 0,
+    };
+
+    try self.scopes.append(alloc, main_scope);
+
+    return self;
 }
 
 pub fn deinit(self: *Self, alloc: std.mem.Allocator) void {
-    self.instructions.deinit(alloc);
+    for (0..self.scopes.items.len) |i| {
+        self.scopes.items[i].instructions.deinit(alloc);
+    }
+
+    self.scopes.deinit(alloc);
 
     for (self.constants.items) |obj| {
         obj.deinit(alloc);
@@ -137,11 +155,33 @@ fn addConstant(self: *Self, alloc: std.mem.Allocator, obj: object.Object) !usize
     return self.constants.items.len - 1;
 }
 
+fn currentInstructions(self: *Self) *std.ArrayList(u8) {
+    return &self.scopes.items[self.scopeIndex].instructions;
+}
+
 fn addInstruction(self: *Self, alloc: std.mem.Allocator, ins: []const u8) !usize {
-    const pos_new_instruction = self.instructions.items.len;
-    try self.instructions.appendSlice(alloc, ins);
+    const pos_new_instruction = self.currentInstructions().items.len;
+    try self.scopes.items[self.scopeIndex].instructions.appendSlice(alloc, ins);
 
     return pos_new_instruction;
+}
+
+fn enterScope(self: *Self, alloc: std.mem.Allocator) !void {
+    const scope: CompilationScope = .{
+        .instructions = .empty,
+        .last_instruction = std.mem.zeroInit(EmittedInstruction, .{}),
+        .previous_instruction = std.mem.zeroInit(EmittedInstruction, .{}),
+    };
+
+    try self.scopes.append(alloc, scope);
+    self.scopeIndex += 1;
+}
+
+fn leaveScope(self: *Self) !std.ArrayList(u8) {
+    const top_scope = self.scopes.pop() orelse return Error.ScopeStackExhausted;
+    self.scopeIndex -= 1;
+
+    return top_scope.instructions;
 }
 
 fn emit(self: *Self, alloc: std.mem.Allocator, op: code.Opcode, operands: []const usize) !usize {
@@ -151,11 +191,11 @@ fn emit(self: *Self, alloc: std.mem.Allocator, op: code.Opcode, operands: []cons
             const pos = try self.addInstruction(alloc, &ins);
 
             // set last/prev instructions
-            const previous = self.last_instruction;
+            const previous = self.scopes.items[self.scopeIndex].last_instruction;
             const last: EmittedInstruction = .{ .opcode = op, .position = pos };
 
-            self.previous_instruction = previous;
-            self.last_instruction = last;
+            self.scopes.items[self.scopeIndex].previous_instruction = previous;
+            self.scopes.items[self.scopeIndex].last_instruction = last;
 
             return pos;
         },
@@ -163,11 +203,13 @@ fn emit(self: *Self, alloc: std.mem.Allocator, op: code.Opcode, operands: []cons
 }
 
 fn replaceInstruction(self: *Self, pos: usize, new_instr: []const u8) !void {
-    try self.instructions.replaceRangeBounded(pos, new_instr.len, new_instr);
+    var instructions = self.currentInstructions();
+    try instructions.replaceRangeBounded(pos, new_instr.len, new_instr);
 }
 
 fn changeOperand(self: *Self, op_pos: usize, operand: usize) !void {
-    const op = std.enums.fromInt(code.Opcode, self.instructions.items[op_pos]) orelse return Error.UnsupportedOperator;
+    const op = std.enums.fromInt(code.Opcode, self.currentInstructions().items[op_pos]) orelse
+        return Error.UnsupportedOperator;
 
     switch (op) {
         inline else => |comp_op| {
@@ -177,13 +219,27 @@ fn changeOperand(self: *Self, op_pos: usize, operand: usize) !void {
     }
 }
 
-fn lastInstructionIsPop(self: *Self) bool {
-    return self.last_instruction.opcode == .pop;
+fn lastInstructionIs(self: *Self, op: code.Opcode) bool {
+    if (self.currentInstructions().items.len == 0) return false;
+
+    return self.scopes.items[self.scopeIndex].last_instruction.opcode == op;
 }
 
 fn removeLastPop(self: *Self) void {
-    _ = self.instructions.pop();
-    self.last_instruction = self.previous_instruction;
+    const previous = self.scopes.items[self.scopeIndex].previous_instruction;
+    var instructions = self.currentInstructions();
+
+    _ = instructions.pop();
+    self.scopes.items[self.scopeIndex].last_instruction = previous;
+}
+
+fn replaceLastPopWithReturn(self: *Self) !void {
+    const last_pos = self.scopes.items[self.scopeIndex].last_instruction.position;
+
+    const new_instr = try code.make(.return_value, &.{});
+    try self.replaceInstruction(last_pos, &new_instr);
+
+    self.scopes.items[self.scopeIndex].last_instruction.opcode = .return_value;
 }
 
 pub fn compile(self: *Self, alloc: std.mem.Allocator, node: ast.Node(.Common)) !void {
@@ -212,7 +268,10 @@ fn compileStatement(self: *Self, alloc: std.mem.Allocator, node: *const ast.Node
             const symbol = try self.symbol_table.define(alloc, stmt.name.value);
             _ = try self.emit(alloc, .set_global, &.{symbol.index});
         },
-        else => return Error.UnknownNode,
+        .return_stmt => |stmt| {
+            try self.compileExpression(alloc, stmt.return_value);
+            _ = try self.emit(alloc, .return_value, &.{});
+        },
     }
 }
 
@@ -283,12 +342,12 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
                 .val = .{ .block_stmt = if_exp.consequence.* },
             });
 
-            if (self.lastInstructionIsPop()) self.removeLastPop();
+            if (self.lastInstructionIs(.pop)) self.removeLastPop();
 
             // emit with a made-up value
             const jump_pos = try self.emit(alloc, .jump, &.{9999});
 
-            const pos_after_consequence = self.instructions.items.len;
+            const pos_after_consequence = self.currentInstructions().items.len;
             try self.changeOperand(jump_not_truthy_pos, pos_after_consequence);
 
             if (if_exp.alternative == null) {
@@ -298,10 +357,10 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
                     .val = .{ .block_stmt = if_exp.alternative.?.* },
                 });
 
-                if (self.lastInstructionIsPop()) self.removeLastPop();
+                if (self.lastInstructionIs(.pop)) self.removeLastPop();
             }
 
-            const pos_after_alternative = self.instructions.items.len;
+            const pos_after_alternative = self.currentInstructions().items.len;
             try self.changeOperand(jump_pos, pos_after_alternative);
         },
         .ident => |ident_exp| {
@@ -344,6 +403,26 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
 
             _ = try self.emit(alloc, .index, &.{});
         },
+        .fn_literal => |fn_exp| {
+            try self.enterScope(alloc);
+
+            try self.compileStatement(
+                alloc,
+                &.{ .val = .{ .block_stmt = fn_exp.body.* } },
+            );
+
+            if (self.lastInstructionIs(.pop)) try self.replaceLastPopWithReturn();
+            if (!self.lastInstructionIs(.return_value)) _ = try self.emit(alloc, .@"return", &.{});
+
+            var instructions = try self.leaveScope();
+            defer instructions.deinit(alloc);
+
+            const comp_fn: object.Object = .{
+                .comp_func = .{ .instructions = instructions.items },
+            };
+
+            _ = try self.emit(alloc, .constant, &.{try self.addConstant(alloc, comp_fn)});
+        },
         else => return Error.UnknownNode,
     }
 }
@@ -356,13 +435,13 @@ pub const Bytecode = struct {
 // bake the processed bytecode
 pub fn bytecode(self: *Self) Bytecode {
     return .{
-        .instructions = self.instructions.items,
+        .instructions = self.currentInstructions().items,
         .constants = self.constants.items,
     };
 }
 
 pub fn resetInstructions(self: *Self) void {
-    self.instructions.clearRetainingCapacity();
+    self.currentInstructions().clearRetainingCapacity();
     self.last_instruction = std.mem.zeroInit(EmittedInstruction, .{});
     self.previous_instruction = std.mem.zeroInit(EmittedInstruction, .{});
 }
@@ -374,6 +453,7 @@ const CompilerTestCase = struct {
     expected_constants: []const union(enum) {
         int: usize,
         str: []const u8,
+        instr: []const code.Instructions,
     },
     expected_instructions: []code.Instructions,
 };
@@ -811,6 +891,104 @@ test "index expressions" {
     try runCompilerTests(tests);
 }
 
+test "functions" {
+    const tests: []const CompilerTestCase = &.{
+        .{
+            .input = "fn() { return 5 + 10 }",
+            .expected_constants = &.{
+                .{ .int = 5 },
+                .{ .int = 10 },
+                .{ .instr = &.{
+                    &(try code.make(.constant, &.{0})),
+                    &(try code.make(.constant, &.{1})),
+                    &(try code.make(.add, &.{})),
+                    &(try code.make(.return_value, &.{})),
+                } },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{2})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "fn() { 5 + 10 }",
+            .expected_constants = &.{
+                .{ .int = 5 },
+                .{ .int = 10 },
+                .{ .instr = &.{
+                    &(try code.make(.constant, &.{0})),
+                    &(try code.make(.constant, &.{1})),
+                    &(try code.make(.add, &.{})),
+                    &(try code.make(.return_value, &.{})),
+                } },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{2})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "fn() { 1; 2 }",
+            .expected_constants = &.{
+                .{ .int = 1 },
+                .{ .int = 2 },
+                .{ .instr = &.{
+                    &(try code.make(.constant, &.{0})),
+                    &(try code.make(.pop, &.{})),
+                    &(try code.make(.constant, &.{1})),
+                    &(try code.make(.return_value, &.{})),
+                } },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{2})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "fn() { }",
+            .expected_constants = &.{
+                .{ .instr = &.{
+                    &(try code.make(.@"return", &.{})),
+                } },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+    };
+
+    try runCompilerTests(tests);
+}
+
+test "compilation scopes" {
+    const alloc = std.testing.allocator;
+
+    var compiler = try init(alloc);
+    defer compiler.deinit(alloc);
+    try std.testing.expectEqual(0, compiler.scopeIndex);
+
+    _ = try compiler.emit(alloc, .mul, &.{});
+
+    try compiler.enterScope(alloc);
+    try std.testing.expectEqual(1, compiler.scopeIndex);
+
+    _ = try compiler.emit(alloc, .sub, &.{});
+
+    try std.testing.expectEqual(1, compiler.scopes.items[compiler.scopeIndex].instructions.items.len);
+    try std.testing.expectEqual(code.Opcode.sub, compiler.scopes.items[compiler.scopeIndex].last_instruction.opcode);
+
+    var instructions = try compiler.leaveScope();
+    defer instructions.deinit(alloc);
+    try std.testing.expectEqual(0, compiler.scopeIndex);
+
+    _ = try compiler.emit(alloc, .add, &.{});
+
+    try std.testing.expectEqual(2, compiler.scopes.items[compiler.scopeIndex].instructions.items.len);
+    try std.testing.expectEqual(code.Opcode.add, compiler.scopes.items[compiler.scopeIndex].last_instruction.opcode);
+    try std.testing.expectEqual(code.Opcode.mul, compiler.scopes.items[compiler.scopeIndex].previous_instruction.opcode);
+}
+
 fn parse(alloc: std.mem.Allocator, input: []const u8) !struct { ast.Node(.Common), Parser } {
     var l = Lexer.init(input);
     var p = Parser.init(&l);
@@ -859,6 +1037,14 @@ fn testConstants(expected: @FieldType(CompilerTestCase, "expected_constants"), a
         switch (exp_const) {
             .int => |exp| try testIntegerObject(@intCast(exp), act_const),
             .str => |exp| try testStringObject(exp, act_const),
+            .instr => |exp| {
+                try std.testing.expectEqual(object.ObjectType.comp_func, @as(object.ObjectType, act_const));
+
+                const exp_instructions = try std.mem.concat(std.testing.allocator, u8, exp);
+                defer std.testing.allocator.free(exp_instructions);
+
+                try testInstructions(exp_instructions, act_const.comp_func.instructions);
+            },
         }
     }
 }
@@ -871,7 +1057,7 @@ fn runCompilerTests(tests: []const CompilerTestCase) !void {
         defer program.val.program.deinit(alloc);
         defer p.deinit(alloc);
 
-        var compiler = init();
+        var compiler = try init(alloc);
         defer compiler.deinit(alloc);
 
         try compiler.compile(alloc, program);

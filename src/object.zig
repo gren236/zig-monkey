@@ -1,5 +1,6 @@
 const std = @import("std");
 const ast = @import("ast.zig");
+const code = @import("code.zig");
 
 const BuiltinFunction = *const fn (alloc: std.mem.Allocator, args: []Object) anyerror!Object;
 
@@ -11,6 +12,7 @@ pub const ObjectType = enum {
     err,
     env,
     func,
+    comp_func,
     string,
     builtin,
     array,
@@ -25,6 +27,7 @@ pub const Object = union(ObjectType) {
     err: Error,
     env: Environment,
     func: Function,
+    comp_func: CompiledFunction,
     string: String,
     builtin: Builtin,
     array: Array,
@@ -281,6 +284,32 @@ pub const Function = struct {
         self.body.deinit(alloc);
         self.env.deinit(alloc);
         alloc.destroy(self.env);
+    }
+};
+
+pub const CompiledFunction = struct {
+    instructions: code.Instructions,
+
+    pub fn init(alloc: std.mem.Allocator, instructions: code.Instructions) !CompiledFunction {
+        return .{
+            .instructions = try alloc.dupe(u8, instructions),
+        };
+    }
+
+    fn clone(self: @This(), alloc: std.mem.Allocator) !Object {
+        return .{ .comp_func = .{
+            .instructions = try alloc.dupe(u8, self.instructions),
+        } };
+    }
+
+    fn deinit(self: @This(), alloc: std.mem.Allocator) void {
+        alloc.free(self.instructions);
+    }
+
+    fn inspect(self: @This(), out: *std.Io.Writer) !void {
+        _ = try out.write("CompiledFunction[");
+        try code.writeInstructions(self.instructions, out);
+        _ = try out.write("]");
     }
 };
 
