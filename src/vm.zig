@@ -16,6 +16,7 @@ pub const Error = error{
     UnsupportedOperationTypes,
     UnsupportedOperator,
     UnsupportedIndexOperator,
+    CallingNonFunction,
 };
 
 const Frame = struct {
@@ -120,7 +121,7 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
         switch (op) {
             .constant => {
                 const width = 2;
-                const const_index = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
+                const const_index = code.readOperandInt(width, ins[ip + 1 ..][0..width]);
                 self.currentFrame().ip += width;
 
                 try self.push(bytecode.constants[const_index]);
@@ -134,13 +135,13 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
             .pop => _ = self.pop(),
             .jump => {
                 const width = 2;
-                const pos = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
+                const pos = code.readOperandInt(width, ins[ip + 1 ..][0..width]);
 
                 self.currentFrame().ip = @intCast(pos - 1);
             },
             .jump_not_truthy => {
                 const width = 2;
-                const pos = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
+                const pos = code.readOperandInt(width, ins[ip + 1 ..][0..width]);
                 self.currentFrame().ip += width;
 
                 const condition = self.pop() orelse return Error.StackExhausted;
@@ -148,21 +149,21 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
             },
             .set_global => {
                 const width = 2;
-                const global_index = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
+                const global_index = code.readOperandInt(width, ins[ip + 1 ..][0..width]);
                 self.currentFrame().ip += width;
 
                 self.globals[global_index] = self.pop() orelse nil;
             },
             .get_global => {
                 const width = 2;
-                const global_index = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
+                const global_index = code.readOperandInt(width, ins[ip + 1 ..][0..width]);
                 self.currentFrame().ip += width;
 
                 try self.push(self.globals[global_index]);
             },
             .array => {
                 const width = 2;
-                const num_elements = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
+                const num_elements = code.readOperandInt(width, ins[ip + 1 ..][0..width]);
                 self.currentFrame().ip += width;
 
                 const array = try self.buildArray(self.sp - num_elements, self.sp);
@@ -170,7 +171,7 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
             },
             .hash => {
                 const width = 2;
-                const num_elements = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
+                const num_elements = code.readOperandInt(width, ins[ip + 1 ..][0..width]);
                 self.currentFrame().ip += width;
 
                 const hash = try self.buildHash(self.sp - num_elements, self.sp);
@@ -184,8 +185,27 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
 
                 try self.executeIndexExpression(left, index);
             },
+            .call => {
+                const obj = self.stack[self.sp - 1];
+                if (@as(object.ObjectType, obj) != .comp_func) return Error.CallingNonFunction;
+
+                self.pushFrame(.init(obj.comp_func));
+            },
+            .return_value => {
+                const return_val = self.pop() orelse return Error.StackExhausted;
+
+                _ = self.popFrame();
+                _ = self.pop();
+
+                try self.push(return_val);
+            },
+            .@"return" => {
+                _ = self.popFrame();
+                _ = self.pop();
+
+                try self.push(nil);
+            },
             .nil => try self.push(nil),
-            else => return Error.UnknownOpcode,
         }
     }
 }
@@ -540,6 +560,87 @@ test "index expressions" {
         .{ .input = "{1: 1, 2: 2}[2]", .expected = .{ .int = 2 } },
         .{ .input = "{1: 1}[0]", .expected = null },
         .{ .input = "{}[0]", .expected = null },
+    };
+
+    try runVmTests(tests);
+}
+
+test "calling functions without arguments" {
+    const tests: []const VmTestCase = &.{
+        .{
+            .input =
+            \\ let fivePlusTen = fn() { 5 + 10; };
+            \\ fivePlusTen();
+            ,
+            .expected = .{ .int = 15 },
+        },
+        .{
+            .input =
+            \\ let one = fn() { 1; };
+            \\ let two = fn() { 2; };
+            \\ one() + two();
+            ,
+            .expected = .{ .int = 3 },
+        },
+    };
+
+    try runVmTests(tests);
+}
+
+test "calling functions with return statements" {
+    const tests: []const VmTestCase = &.{
+        .{
+            .input =
+            \\ let earlyExit = fn() { return 99; 100; };
+            \\ earlyExit();
+            ,
+            .expected = .{ .int = 99 },
+        },
+        .{
+            .input =
+            \\ let earlyExit = fn() { return 99; return 100; };
+            \\ earlyExit();
+            ,
+            .expected = .{ .int = 99 },
+        },
+    };
+
+    try runVmTests(tests);
+}
+
+test "calling functions without return value" {
+    const tests: []const VmTestCase = &.{
+        .{
+            .input =
+            \\ let noReturn = fn() { };
+            \\ noReturn();
+            ,
+            .expected = null,
+        },
+        .{
+            .input =
+            \\ let noReturn = fn() { };
+            \\ let noReturnTwo = fn() { noReturn(); };
+            \\ noReturn();
+            \\ noReturnTwo();
+            ,
+            .expected = null,
+        },
+    };
+
+    try runVmTests(tests);
+}
+
+test "first class functions" {
+    const tests: []const VmTestCase = &.{
+        .{
+            .input =
+            \\ let returnsOne = fn() { 1; };
+            \\ let returnsOneReturner = fn() { returnsOne; };
+            \\ returnsOneReturner()();
+            ,
+            .expected = .{ .int = 1 },
+        },
     };
 
     try runVmTests(tests);
