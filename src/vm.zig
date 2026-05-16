@@ -18,8 +18,26 @@ pub const Error = error{
     UnsupportedIndexOperator,
 };
 
+const Frame = struct {
+    func: object.CompiledFunction,
+    ip: isize,
+
+    fn init(func: object.CompiledFunction) Frame {
+        return .{
+            .func = func,
+            .ip = -1,
+        };
+    }
+
+    fn instructions(self: *const Frame) code.Instructions {
+        return self.func.instructions;
+    }
+};
+
 const stack_size = 2048;
 const globals_size = 65536;
+const max_frames = 1024;
+
 const string_arena_size = 1024 * 1024 * 5; // 5mb
 const array_arena_size = 1024 * 1024 * 5; // 5mb
 const hash_arena_size = 1024 * 1024 * 5; // 5mb
@@ -38,6 +56,9 @@ array_fba: std.heap.FixedBufferAllocator,
 hash_arena: [hash_arena_size]u8,
 hash_fba: std.heap.FixedBufferAllocator,
 
+frames: [max_frames]Frame,
+frames_index: usize,
+
 pub fn create(alloc: std.mem.Allocator) !*Self {
     const self = try alloc.create(Self);
 
@@ -46,6 +67,8 @@ pub fn create(alloc: std.mem.Allocator) !*Self {
         .sp = 0,
 
         .globals = @splat(nil),
+        .frames = @splat(undefined),
+        .frames_index = 0,
 
         .string_arena = undefined,
         .string_fba = undefined,
@@ -66,17 +89,39 @@ pub fn destroy(self: *Self, alloc: std.mem.Allocator) void {
     alloc.destroy(self);
 }
 
+fn currentFrame(self: *Self) *Frame {
+    return &self.frames[self.frames_index - 1];
+}
+
+fn pushFrame(self: *Self, f: Frame) void {
+    self.frames[self.frames_index] = f;
+    self.frames_index += 1;
+}
+
+fn popFrame(self: *Self) Frame {
+    self.frames_index -= 1;
+    return self.frames[self.frames_index];
+}
+
 pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
-    var ip: usize = 0;
-    while (ip < bytecode.instructions.len) {
-        const op = std.enums.fromInt(code.Opcode, bytecode.instructions[ip]) orelse
+    self.pushFrame(.init(
+        object.CompiledFunction{ .instructions = bytecode.instructions },
+    ));
+
+    while (self.currentFrame().ip < self.currentFrame().instructions().len - 1) {
+        self.currentFrame().ip += 1;
+
+        const ip: usize = @intCast(self.currentFrame().ip);
+        const ins = self.currentFrame().instructions();
+
+        const op = std.enums.fromInt(code.Opcode, ins[ip]) orelse
             return Error.UnknownOpcode;
 
         switch (op) {
             .constant => {
                 const width = 2;
                 const const_index = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
-                ip += width;
+                self.currentFrame().ip += width;
 
                 try self.push(bytecode.constants[const_index]);
             },
@@ -91,34 +136,34 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
                 const width = 2;
                 const pos = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
 
-                ip = @intCast(pos - 1);
+                self.currentFrame().ip = @intCast(pos - 1);
             },
             .jump_not_truthy => {
                 const width = 2;
                 const pos = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
-                ip += width;
+                self.currentFrame().ip += width;
 
                 const condition = self.pop() orelse return Error.StackExhausted;
-                if (!isTruthy(condition)) ip = @intCast(pos - 1);
+                if (!isTruthy(condition)) self.currentFrame().ip = @intCast(pos - 1);
             },
             .set_global => {
                 const width = 2;
                 const global_index = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
-                ip += width;
+                self.currentFrame().ip += width;
 
                 self.globals[global_index] = self.pop() orelse nil;
             },
             .get_global => {
                 const width = 2;
                 const global_index = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
-                ip += width;
+                self.currentFrame().ip += width;
 
                 try self.push(self.globals[global_index]);
             },
             .array => {
                 const width = 2;
                 const num_elements = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
-                ip += width;
+                self.currentFrame().ip += width;
 
                 const array = try self.buildArray(self.sp - num_elements, self.sp);
                 try self.push(array);
@@ -126,7 +171,7 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
             .hash => {
                 const width = 2;
                 const num_elements = code.readOperandInt(width, bytecode.instructions[ip + 1 ..][0..width]);
-                ip += width;
+                self.currentFrame().ip += width;
 
                 const hash = try self.buildHash(self.sp - num_elements, self.sp);
                 self.sp = self.sp - num_elements;
@@ -140,9 +185,8 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
                 try self.executeIndexExpression(left, index);
             },
             .nil => try self.push(nil),
+            else => return Error.UnknownOpcode,
         }
-
-        ip += 1;
     }
 }
 

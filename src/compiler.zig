@@ -423,7 +423,10 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
 
             _ = try self.emit(alloc, .constant, &.{try self.addConstant(alloc, comp_fn)});
         },
-        else => return Error.UnknownNode,
+        .call_exp => |call_exp| {
+            try self.compileExpression(alloc, call_exp.function);
+            _ = try self.emit(alloc, .call, &.{});
+        },
     }
 }
 
@@ -442,8 +445,8 @@ pub fn bytecode(self: *Self) Bytecode {
 
 pub fn resetInstructions(self: *Self) void {
     self.currentInstructions().clearRetainingCapacity();
-    self.last_instruction = std.mem.zeroInit(EmittedInstruction, .{});
-    self.previous_instruction = std.mem.zeroInit(EmittedInstruction, .{});
+    self.scopes.items[self.scopeIndex].last_instruction = std.mem.zeroInit(EmittedInstruction, .{});
+    self.scopes.items[self.scopeIndex].previous_instruction = std.mem.zeroInit(EmittedInstruction, .{});
 }
 
 // Testing
@@ -953,6 +956,48 @@ test "functions" {
             },
             .expected_instructions = @constCast(&[_]code.Instructions{
                 &(try code.make(.constant, &.{0})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+    };
+
+    try runCompilerTests(tests);
+}
+
+test "function calls" {
+    const tests: []const CompilerTestCase = &.{
+        .{
+            .input = "fn() { 24 }();",
+            .expected_constants = &.{
+                .{ .int = 24 },
+                .{ .instr = &.{
+                    &(try code.make(.constant, &.{0})),
+                    &(try code.make(.return_value, &.{})),
+                } },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.call, &.{})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input =
+            \\ let noArg = fn() { 24 };
+            \\ noArg();
+            ,
+            .expected_constants = &.{
+                .{ .int = 24 },
+                .{ .instr = &.{
+                    &(try code.make(.constant, &.{0})),
+                    &(try code.make(.return_value, &.{})),
+                } },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.set_global, &.{0})),
+                &(try code.make(.get_global, &.{0})),
+                &(try code.make(.call, &.{})),
                 &(try code.make(.pop, &.{})),
             }),
         },
