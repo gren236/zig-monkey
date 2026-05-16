@@ -22,11 +22,13 @@ pub const Error = error{
 const Frame = struct {
     func: object.CompiledFunction,
     ip: isize,
+    base_pointer: usize,
 
-    fn init(func: object.CompiledFunction) Frame {
+    fn init(func: object.CompiledFunction, base_pointer: usize) Frame {
         return .{
             .func = func,
             .ip = -1,
+            .base_pointer = base_pointer,
         };
     }
 
@@ -106,7 +108,8 @@ fn popFrame(self: *Self) Frame {
 
 pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
     self.pushFrame(.init(
-        object.CompiledFunction{ .instructions = bytecode.instructions },
+        object.CompiledFunction{ .instructions = bytecode.instructions, .num_locals = 0 },
+        0,
     ));
 
     while (self.currentFrame().ip < self.currentFrame().instructions().len - 1) {
@@ -189,21 +192,41 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
                 const obj = self.stack[self.sp - 1];
                 if (@as(object.ObjectType, obj) != .comp_func) return Error.CallingNonFunction;
 
-                self.pushFrame(.init(obj.comp_func));
+                const frame: Frame = .init(obj.comp_func, self.sp);
+                self.pushFrame(frame);
+                self.sp = frame.base_pointer + obj.comp_func.num_locals;
             },
             .return_value => {
                 const return_val = self.pop() orelse return Error.StackExhausted;
 
-                _ = self.popFrame();
-                _ = self.pop();
+                const frame = self.popFrame();
+                self.sp = frame.base_pointer - 1;
 
                 try self.push(return_val);
             },
             .@"return" => {
-                _ = self.popFrame();
-                _ = self.pop();
+                const frame = self.popFrame();
+                self.sp = frame.base_pointer - 1;
 
                 try self.push(nil);
+            },
+            .set_local => {
+                const width = 1;
+                const local_index = code.readOperandInt(width, ins[ip + 1 ..][0..width]);
+                self.currentFrame().ip += width;
+
+                const frame = self.currentFrame();
+
+                self.stack[frame.base_pointer + local_index] = self.pop() orelse return Error.StackExhausted;
+            },
+            .get_local => {
+                const width = 1;
+                const local_index = code.readOperandInt(width, ins[ip + 1 ..][0..width]);
+                self.currentFrame().ip += width;
+
+                const frame = self.currentFrame();
+
+                try self.push(self.stack[frame.base_pointer + local_index]);
             },
             .nil => try self.push(nil),
         }
@@ -640,6 +663,68 @@ test "first class functions" {
             \\ returnsOneReturner()();
             ,
             .expected = .{ .int = 1 },
+        },
+        .{
+            .input =
+            \\ let returnsOneReturner = fn() {
+            \\     let returnsOne = fn() { 1; };
+            \\     returnsOne;
+            \\ };
+            \\ returnsOneReturner()();
+            ,
+            .expected = .{ .int = 1 },
+        },
+    };
+
+    try runVmTests(tests);
+}
+
+test "calling functions with bindings" {
+    const tests: []const VmTestCase = &.{
+        .{
+            .input =
+            \\ let one = fn() { let one = 1; one };
+            \\ one();
+            ,
+            .expected = .{ .int = 1 },
+        },
+        .{
+            .input =
+            \\ let oneAndTwo = fn() { let one = 1; let two = 2; one + two; };
+            \\ oneAndTwo();
+            ,
+            .expected = .{ .int = 3 },
+        },
+        .{
+            .input =
+            \\ let oneAndTwo = fn() { let one = 1; let two = 2; one + two; };
+            \\ let threeAndFour = fn() { let three = 3; let four = 4; three + four; };
+            \\ oneAndTwo() + threeAndFour();
+            ,
+            .expected = .{ .int = 10 },
+        },
+        .{
+            .input =
+            \\ let firstFoobar = fn() { let foobar = 50; foobar; };
+            \\ let secondFoobar = fn() { let foobar = 100; foobar; };
+            \\ firstFoobar() + secondFoobar();
+            ,
+            .expected = .{ .int = 150 },
+        },
+        .{
+            .input =
+            \\ let globalSeed = 50;
+            \\ let minusOne = fn() {
+            \\     let num = 1;
+            \\     globalSeed - num;
+            \\ }
+            \\ let minusTwo = fn() {
+            \\     let num = 2;
+            \\     globalSeed - num;
+            \\ }
+            \\ minusOne() + minusTwo();
+            ,
+            .expected = .{ .int = 97 },
         },
     };
 

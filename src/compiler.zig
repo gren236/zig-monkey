@@ -13,6 +13,7 @@ pub const Error = error{ UnknownNode, UnsupportedOperator, UndefinedVariable, Sc
 const SymbolTable = struct {
     const Scope = enum {
         global,
+        local,
     };
 
     const Symbol = struct {
@@ -21,14 +22,39 @@ const SymbolTable = struct {
         index: usize,
     };
 
+    outer: ?*SymbolTable,
+
     store: std.StringHashMapUnmanaged(Symbol),
     num_definitions: usize,
 
     pub fn init() @This() {
         return .{
+            .outer = null,
             .store = .empty,
             .num_definitions = 0,
         };
+    }
+
+    pub fn create(alloc: std.mem.Allocator) !*@This() {
+        const self = try alloc.create(@This());
+        self.* = .init();
+
+        return self;
+    }
+
+    pub fn initEnclosed(outer: *@This()) @This() {
+        return .{
+            .outer = outer,
+            .store = .empty,
+            .num_definitions = 0,
+        };
+    }
+
+    pub fn createEnclosed(alloc: std.mem.Allocator, outer: *@This()) !*@This() {
+        const self = try alloc.create(@This());
+        self.* = .initEnclosed(outer);
+
+        return self;
     }
 
     pub fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
@@ -40,10 +66,15 @@ const SymbolTable = struct {
         self.store.deinit(alloc);
     }
 
+    pub fn destroy(self: *@This(), alloc: std.mem.Allocator) void {
+        self.deinit(alloc);
+        alloc.destroy(self);
+    }
+
     pub fn define(self: *@This(), alloc: std.mem.Allocator, name: []const u8) !Symbol {
         const symbol: Symbol = .{
             .name = try alloc.dupe(u8, name),
-            .scope = .global,
+            .scope = if (self.outer != null) .local else .global,
             .index = self.num_definitions,
         };
         errdefer alloc.free(symbol.name);
@@ -54,8 +85,14 @@ const SymbolTable = struct {
         return symbol;
     }
 
-    pub fn resolve(self: *@This(), name: []const u8) ?Symbol {
-        return self.store.get(name);
+    pub fn resolve(self: *const @This(), name: []const u8) ?Symbol {
+        const obj = self.store.get(name);
+
+        if (obj == null and self.outer != null) {
+            return self.outer.?.resolve(name);
+        }
+
+        return obj;
     }
 
     test define {
@@ -63,19 +100,41 @@ const SymbolTable = struct {
             .{
                 .{ "a", Symbol{ .name = "a", .scope = .global, .index = 0 } },
                 .{ "b", Symbol{ .name = "b", .scope = .global, .index = 1 } },
+                .{ "c", Symbol{ .name = "c", .scope = .local, .index = 0 } },
+                .{ "d", Symbol{ .name = "d", .scope = .local, .index = 1 } },
+                .{ "e", Symbol{ .name = "e", .scope = .local, .index = 0 } },
+                .{ "f", Symbol{ .name = "f", .scope = .local, .index = 1 } },
             },
         );
 
         const alloc = std.testing.allocator;
 
-        var global: @This() = .init();
-        defer global.deinit(alloc);
+        var global: *@This() = try .create(alloc);
+        defer global.destroy(alloc);
 
         const a = try global.define(alloc, "a");
         try std.testing.expectEqualDeep(expected.get("a"), a);
 
         const b = try global.define(alloc, "b");
         try std.testing.expectEqualDeep(expected.get("b"), b);
+
+        var firstLocal: *@This() = try .createEnclosed(alloc, global);
+        defer firstLocal.destroy(alloc);
+
+        const c = try firstLocal.define(alloc, "c");
+        try std.testing.expectEqualDeep(expected.get("c"), c);
+
+        const d = try firstLocal.define(alloc, "d");
+        try std.testing.expectEqualDeep(expected.get("d"), d);
+
+        var secondLocal: *@This() = try .createEnclosed(alloc, firstLocal);
+        defer secondLocal.destroy(alloc);
+
+        const e = try secondLocal.define(alloc, "e");
+        try std.testing.expectEqualDeep(expected.get("e"), e);
+
+        const f = try secondLocal.define(alloc, "f");
+        try std.testing.expectEqualDeep(expected.get("f"), f);
     }
 
     test resolve {
@@ -114,7 +173,7 @@ scopes: std.ArrayList(CompilationScope),
 scopeIndex: usize,
 
 constants: std.ArrayList(object.Object),
-symbol_table: SymbolTable,
+symbol_table: *SymbolTable,
 
 pub fn init(alloc: std.mem.Allocator) !Self {
     const main_scope: CompilationScope = .{
@@ -125,7 +184,7 @@ pub fn init(alloc: std.mem.Allocator) !Self {
 
     var self: Self = .{
         .constants = .empty,
-        .symbol_table = .init(),
+        .symbol_table = try .create(alloc),
         .scopes = .empty,
         .scopeIndex = 0,
     };
@@ -147,7 +206,7 @@ pub fn deinit(self: *Self, alloc: std.mem.Allocator) void {
     }
     self.constants.deinit(alloc);
 
-    self.symbol_table.deinit(alloc);
+    self.symbol_table.destroy(alloc);
 }
 
 fn addConstant(self: *Self, alloc: std.mem.Allocator, obj: object.Object) !usize {
@@ -175,11 +234,17 @@ fn enterScope(self: *Self, alloc: std.mem.Allocator) !void {
 
     try self.scopes.append(alloc, scope);
     self.scopeIndex += 1;
+
+    self.symbol_table = try .createEnclosed(alloc, self.symbol_table);
 }
 
-fn leaveScope(self: *Self) !std.ArrayList(u8) {
+fn leaveScope(self: *Self, alloc: std.mem.Allocator) !std.ArrayList(u8) {
     const top_scope = self.scopes.pop() orelse return Error.ScopeStackExhausted;
     self.scopeIndex -= 1;
+
+    const old_symbol_table = self.symbol_table.outer.?;
+    self.symbol_table.destroy(alloc);
+    self.symbol_table = old_symbol_table;
 
     return top_scope.instructions;
 }
@@ -266,7 +331,11 @@ fn compileStatement(self: *Self, alloc: std.mem.Allocator, node: *const ast.Node
         .let_stmt => |stmt| {
             try self.compileExpression(alloc, stmt.value);
             const symbol = try self.symbol_table.define(alloc, stmt.name.value);
-            _ = try self.emit(alloc, .set_global, &.{symbol.index});
+            _ = try self.emit(
+                alloc,
+                if (symbol.scope == .global) .set_global else .set_local,
+                &.{symbol.index},
+            );
         },
         .return_stmt => |stmt| {
             try self.compileExpression(alloc, stmt.return_value);
@@ -365,7 +434,11 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
         },
         .ident => |ident_exp| {
             const symbol = self.symbol_table.resolve(ident_exp.value) orelse return Error.UndefinedVariable;
-            _ = try self.emit(alloc, .get_global, &.{symbol.index});
+            _ = try self.emit(
+                alloc,
+                if (symbol.scope == .global) .get_global else .get_local,
+                &.{symbol.index},
+            );
         },
         .string_literal => |str_exp| {
             const str: object.Object = .{ .string = .{ .value = str_exp.value } };
@@ -414,11 +487,15 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
             if (self.lastInstructionIs(.pop)) try self.replaceLastPopWithReturn();
             if (!self.lastInstructionIs(.return_value)) _ = try self.emit(alloc, .@"return", &.{});
 
-            var instructions = try self.leaveScope();
+            const num_locals = self.symbol_table.num_definitions;
+            var instructions = try self.leaveScope(alloc);
             defer instructions.deinit(alloc);
 
             const comp_fn: object.Object = .{
-                .comp_func = .{ .instructions = instructions.items },
+                .comp_func = .{
+                    .instructions = instructions.items,
+                    .num_locals = num_locals,
+                },
             };
 
             _ = try self.emit(alloc, .constant, &.{try self.addConstant(alloc, comp_fn)});
@@ -1006,12 +1083,87 @@ test "function calls" {
     try runCompilerTests(tests);
 }
 
+test "let statements scopes" {
+    const tests: []const CompilerTestCase = &.{
+        .{
+            .input =
+            \\ let num = 55;
+            \\ fn() { num }
+            ,
+            .expected_constants = &.{
+                .{ .int = 55 },
+                .{ .instr = &.{
+                    &(try code.make(.get_global, &.{0})),
+                    &(try code.make(.return_value, &.{})),
+                } },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.set_global, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input =
+            \\ fn() {
+            \\     let num = 55;
+            \\     num
+            \\ }
+            ,
+            .expected_constants = &.{
+                .{ .int = 55 },
+                .{ .instr = &.{
+                    &(try code.make(.constant, &.{0})),
+                    &(try code.make(.set_local, &.{0})),
+                    &(try code.make(.get_local, &.{0})),
+                    &(try code.make(.return_value, &.{})),
+                } },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input =
+            \\ fn() {
+            \\     let a = 55;
+            \\     let b = 77;
+            \\     a + b
+            \\ }
+            ,
+            .expected_constants = &.{
+                .{ .int = 55 },
+                .{ .int = 77 },
+                .{ .instr = &.{
+                    &(try code.make(.constant, &.{0})),
+                    &(try code.make(.set_local, &.{0})),
+                    &(try code.make(.constant, &.{1})),
+                    &(try code.make(.set_local, &.{1})),
+                    &(try code.make(.get_local, &.{0})),
+                    &(try code.make(.get_local, &.{1})),
+                    &(try code.make(.add, &.{})),
+                    &(try code.make(.return_value, &.{})),
+                } },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{2})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+    };
+
+    try runCompilerTests(tests);
+}
+
 test "compilation scopes" {
     const alloc = std.testing.allocator;
 
     var compiler = try init(alloc);
     defer compiler.deinit(alloc);
     try std.testing.expectEqual(0, compiler.scopeIndex);
+    const globalSymbolTable = compiler.symbol_table;
 
     _ = try compiler.emit(alloc, .mul, &.{});
 
@@ -1022,16 +1174,97 @@ test "compilation scopes" {
 
     try std.testing.expectEqual(1, compiler.scopes.items[compiler.scopeIndex].instructions.items.len);
     try std.testing.expectEqual(code.Opcode.sub, compiler.scopes.items[compiler.scopeIndex].last_instruction.opcode);
+    try std.testing.expectEqualDeep(globalSymbolTable, compiler.symbol_table.outer.?);
 
-    var instructions = try compiler.leaveScope();
+    var instructions = try compiler.leaveScope(alloc);
     defer instructions.deinit(alloc);
     try std.testing.expectEqual(0, compiler.scopeIndex);
+    try std.testing.expectEqualDeep(globalSymbolTable, compiler.symbol_table);
+    try std.testing.expectEqual(null, compiler.symbol_table.outer);
 
     _ = try compiler.emit(alloc, .add, &.{});
 
     try std.testing.expectEqual(2, compiler.scopes.items[compiler.scopeIndex].instructions.items.len);
     try std.testing.expectEqual(code.Opcode.add, compiler.scopes.items[compiler.scopeIndex].last_instruction.opcode);
     try std.testing.expectEqual(code.Opcode.mul, compiler.scopes.items[compiler.scopeIndex].previous_instruction.opcode);
+}
+
+test "resolve local" {
+    const alloc = std.testing.allocator;
+
+    var global = try SymbolTable.create(alloc);
+    defer global.destroy(alloc);
+    _ = try global.define(alloc, "a");
+    _ = try global.define(alloc, "b");
+
+    var local = try SymbolTable.createEnclosed(alloc, global);
+    defer local.destroy(alloc);
+    _ = try local.define(alloc, "c");
+    _ = try local.define(alloc, "d");
+
+    const expected: []const SymbolTable.Symbol = &.{
+        .{ .name = "a", .scope = .global, .index = 0 },
+        .{ .name = "b", .scope = .global, .index = 1 },
+        .{ .name = "c", .scope = .local, .index = 0 },
+        .{ .name = "d", .scope = .local, .index = 1 },
+    };
+
+    for (expected) |sym| {
+        const result = local.resolve(sym.name);
+        try std.testing.expect(result != null);
+        try std.testing.expectEqualDeep(sym, result.?);
+    }
+}
+
+test "resolve nested local" {
+    const alloc = std.testing.allocator;
+
+    var global = try SymbolTable.create(alloc);
+    defer global.destroy(alloc);
+    _ = try global.define(alloc, "a");
+    _ = try global.define(alloc, "b");
+
+    var firstLocal = try SymbolTable.createEnclosed(alloc, global);
+    defer firstLocal.destroy(alloc);
+    _ = try firstLocal.define(alloc, "c");
+    _ = try firstLocal.define(alloc, "d");
+
+    var secondLocal = try SymbolTable.createEnclosed(alloc, firstLocal);
+    defer secondLocal.destroy(alloc);
+    _ = try secondLocal.define(alloc, "e");
+    _ = try secondLocal.define(alloc, "f");
+
+    const tests: []const struct {
+        table: *const SymbolTable,
+        expectedSymbols: []const SymbolTable.Symbol,
+    } = &.{
+        .{
+            .table = firstLocal,
+            .expectedSymbols = &.{
+                .{ .name = "a", .scope = .global, .index = 0 },
+                .{ .name = "b", .scope = .global, .index = 1 },
+                .{ .name = "c", .scope = .local, .index = 0 },
+                .{ .name = "d", .scope = .local, .index = 1 },
+            },
+        },
+        .{
+            .table = secondLocal,
+            .expectedSymbols = &.{
+                .{ .name = "a", .scope = .global, .index = 0 },
+                .{ .name = "b", .scope = .global, .index = 1 },
+                .{ .name = "e", .scope = .local, .index = 0 },
+                .{ .name = "f", .scope = .local, .index = 1 },
+            },
+        },
+    };
+
+    for (tests) |tt| {
+        for (tt.expectedSymbols) |sym| {
+            const result = tt.table.resolve(sym.name);
+            try std.testing.expect(result != null);
+            try std.testing.expectEqualDeep(sym, result.?);
+        }
+    }
 }
 
 fn parse(alloc: std.mem.Allocator, input: []const u8) !struct { ast.Node(.Common), Parser } {

@@ -289,16 +289,19 @@ pub const Function = struct {
 
 pub const CompiledFunction = struct {
     instructions: code.Instructions,
+    num_locals: usize,
 
-    pub fn init(alloc: std.mem.Allocator, instructions: code.Instructions) !CompiledFunction {
+    pub fn init(alloc: std.mem.Allocator, instructions: code.Instructions, num_locals: usize) !CompiledFunction {
         return .{
             .instructions = try alloc.dupe(u8, instructions),
+            .num_locals = num_locals,
         };
     }
 
     fn clone(self: @This(), alloc: std.mem.Allocator) !Object {
         return .{ .comp_func = .{
             .instructions = try alloc.dupe(u8, self.instructions),
+            .num_locals = self.num_locals,
         } };
     }
 

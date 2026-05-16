@@ -32,6 +32,8 @@ pub const Opcode = enum(u8) {
     call,
     return_value,
     @"return",
+    set_local,
+    get_local,
 
     inline fn lookup(op: @This()) Definition {
         return switch (op) {
@@ -60,6 +62,8 @@ pub const Opcode = enum(u8) {
             .call => .{ .name = "OpCall", .operand_widths = &.{} },
             .return_value => .{ .name = "OpReturnValue", .operand_widths = &.{} },
             .@"return" => .{ .name = "OpReturn", .operand_widths = &.{} },
+            .set_local => .{ .name = "OpSetLocal", .operand_widths = &.{1} },
+            .get_local => .{ .name = "OpGetLocal", .operand_widths = &.{1} },
         };
     }
 
@@ -104,14 +108,16 @@ pub fn writeInstructions(ins: Instructions, writer: *std.Io.Writer) !void {
 test writeInstructions {
     const instructions: []const Instructions = &.{
         &(try make(.add, &.{})),
+        &(try make(.get_local, &.{1})),
         &(try make(.constant, &.{2})),
         &(try make(.constant, &.{65535})),
     };
 
     const expected =
         \\0000 OpAdd
-        \\0001 OpConstant 2
-        \\0004 OpConstant 65535
+        \\0001 OpGetLocal 1
+        \\0003 OpConstant 2
+        \\0006 OpConstant 65535
     ;
 
     const alloc = std.testing.allocator;
@@ -137,6 +143,7 @@ pub fn make(comptime op: Opcode, operands: []const usize) ![op.instructionLen()]
         const width = def.operand_widths[i];
 
         switch (width) {
+            1 => instruction[offset] = @intCast(o),
             2 => std.mem.writeInt(u16, instruction[offset..][0..2], @intCast(o), .big),
             else => return Error.UnexpectedOperandWidth,
         }
@@ -153,8 +160,9 @@ test make {
         operands: []const usize,
         expected: []const u8,
     } = comptime &.{
-        .{ .op = Opcode.constant, .operands = &[_]usize{65534}, .expected = &[_]u8{ @intFromEnum(Opcode.constant), 255, 254 } },
-        .{ .op = Opcode.add, .operands = &[0]usize{}, .expected = &[_]u8{@intFromEnum(Opcode.add)} },
+        .{ .op = .constant, .operands = &[_]usize{65534}, .expected = &[_]u8{ @intFromEnum(Opcode.constant), 255, 254 } },
+        .{ .op = .add, .operands = &[0]usize{}, .expected = &[_]u8{@intFromEnum(Opcode.add)} },
+        .{ .op = .get_local, .operands = &[_]usize{255}, .expected = &[_]u8{ @intFromEnum(Opcode.get_local), 255 } },
     };
 
     inline for (tests) |tt| {
@@ -168,8 +176,16 @@ test make {
     }
 }
 
-pub fn readOperandInt(comptime width: usize, buffer: *const [width]u8) u16 {
-    return std.mem.readInt(u16, buffer, .big);
+pub fn OperandInt(comptime width: usize) type {
+    return switch (width) {
+        1 => u8,
+        2 => u16,
+        else => @compileError("unsupported operand width: " ++ std.fmt.comptimePrint("{d}", .{width})),
+    };
+}
+
+pub fn readOperandInt(comptime width: usize, buffer: *const [width]u8) OperandInt(width) {
+    return std.mem.readInt(OperandInt(width), buffer, .big);
 }
 
 fn readOperands(comptime def: Definition, ins: Instructions) !struct { [def.operand_widths.len]usize, usize } {
@@ -178,6 +194,7 @@ fn readOperands(comptime def: Definition, ins: Instructions) !struct { [def.oper
     var offset: usize = 0;
     for (0.., def.operand_widths) |i, width| {
         switch (width) {
+            1 => operands[i] = readOperandInt(1, ins[offset..][0..1]),
             2 => operands[i] = readOperandInt(2, ins[offset..][0..2]),
             else => return Error.UnexpectedOperandWidth,
         }
@@ -195,6 +212,7 @@ test readOperands {
         bytes_read: usize,
     } = comptime &.{
         .{ .op = .constant, .operands = &.{65535}, .bytes_read = 2 },
+        .{ .op = .get_local, .operands = &.{255}, .bytes_read = 1 },
     };
 
     inline for (tests) |tt| {
