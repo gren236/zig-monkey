@@ -59,7 +59,7 @@ pub const Opcode = enum(u8) {
             .array => .{ .name = "OpArray", .operand_widths = &.{2} },
             .hash => .{ .name = "OpHash", .operand_widths = &.{2} },
             .index => .{ .name = "OpIndex", .operand_widths = &.{} },
-            .call => .{ .name = "OpCall", .operand_widths = &.{} },
+            .call => .{ .name = "OpCall", .operand_widths = &.{1} },
             .return_value => .{ .name = "OpReturnValue", .operand_widths = &.{} },
             .@"return" => .{ .name = "OpReturn", .operand_widths = &.{} },
             .set_local => .{ .name = "OpSetLocal", .operand_widths = &.{1} },
@@ -135,7 +135,7 @@ test writeInstructions {
 pub fn make(comptime op: Opcode, operands: []const usize) ![op.instructionLen()]u8 {
     const def = op.lookup();
 
-    var instruction: [op.instructionLen()]u8 = undefined;
+    var instruction: [op.instructionLen()]u8 = @splat(0);
     instruction[0] = @intFromEnum(op);
 
     var offset: usize = 1;

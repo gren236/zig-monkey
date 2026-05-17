@@ -479,6 +479,10 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
         .fn_literal => |fn_exp| {
             try self.enterScope(alloc);
 
+            for (fn_exp.parameters) |param| {
+                _ = try self.symbol_table.define(alloc, param.value);
+            }
+
             try self.compileStatement(
                 alloc,
                 &.{ .val = .{ .block_stmt = fn_exp.body.* } },
@@ -495,6 +499,7 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
                 .comp_func = .{
                     .instructions = instructions.items,
                     .num_locals = num_locals,
+                    .num_parameters = fn_exp.parameters.len,
                 },
             };
 
@@ -502,7 +507,12 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
         },
         .call_exp => |call_exp| {
             try self.compileExpression(alloc, call_exp.function);
-            _ = try self.emit(alloc, .call, &.{});
+
+            for (call_exp.arguments) |arg| {
+                try self.compileExpression(alloc, &arg);
+            }
+
+            _ = try self.emit(alloc, .call, &.{call_exp.arguments.len});
         },
     }
 }
@@ -1054,7 +1064,7 @@ test "function calls" {
             },
             .expected_instructions = @constCast(&[_]code.Instructions{
                 &(try code.make(.constant, &.{1})),
-                &(try code.make(.call, &.{})),
+                &(try code.make(.call, &.{0})),
                 &(try code.make(.pop, &.{})),
             }),
         },
@@ -1074,7 +1084,101 @@ test "function calls" {
                 &(try code.make(.constant, &.{1})),
                 &(try code.make(.set_global, &.{0})),
                 &(try code.make(.get_global, &.{0})),
-                &(try code.make(.call, &.{})),
+                &(try code.make(.call, &.{0})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input =
+            \\ let oneArg = fn(a) { };
+            \\ oneArg(24);
+            ,
+            .expected_constants = &.{
+                .{ .instr = &.{
+                    &(try code.make(.@"return", &.{})),
+                } },
+                .{ .int = 24 },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.set_global, &.{0})),
+                &(try code.make(.get_global, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.call, &.{1})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input =
+            \\ let manyArg = fn(a, b, c) { };
+            \\ manyArg(24, 25, 26);
+            ,
+            .expected_constants = &.{
+                .{ .instr = &.{
+                    &(try code.make(.@"return", &.{})),
+                } },
+                .{ .int = 24 },
+                .{ .int = 25 },
+                .{ .int = 26 },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.set_global, &.{0})),
+                &(try code.make(.get_global, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.constant, &.{2})),
+                &(try code.make(.constant, &.{3})),
+                &(try code.make(.call, &.{3})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input =
+            \\ let oneArg = fn(a) { a };
+            \\ oneArg(24);
+            ,
+            .expected_constants = &.{
+                .{ .instr = &.{
+                    &(try code.make(.get_local, &.{0})),
+                    &(try code.make(.return_value, &.{})),
+                } },
+                .{ .int = 24 },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.set_global, &.{0})),
+                &(try code.make(.get_global, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.call, &.{1})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input =
+            \\ let manyArg = fn(a, b, c) { a; b; c };
+            \\ manyArg(24, 25, 26);
+            ,
+            .expected_constants = &.{
+                .{ .instr = &.{
+                    &(try code.make(.get_local, &.{0})),
+                    &(try code.make(.pop, &.{})),
+                    &(try code.make(.get_local, &.{1})),
+                    &(try code.make(.pop, &.{})),
+                    &(try code.make(.get_local, &.{2})),
+                    &(try code.make(.return_value, &.{})),
+                } },
+                .{ .int = 24 },
+                .{ .int = 25 },
+                .{ .int = 26 },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.set_global, &.{0})),
+                &(try code.make(.get_global, &.{0})),
+                &(try code.make(.constant, &.{1})),
+                &(try code.make(.constant, &.{2})),
+                &(try code.make(.constant, &.{3})),
+                &(try code.make(.call, &.{3})),
                 &(try code.make(.pop, &.{})),
             }),
         },

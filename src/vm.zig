@@ -17,6 +17,7 @@ pub const Error = error{
     UnsupportedOperator,
     UnsupportedIndexOperator,
     CallingNonFunction,
+    WrongNumberOfArgs,
 };
 
 const Frame = struct {
@@ -108,7 +109,11 @@ fn popFrame(self: *Self) Frame {
 
 pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
     self.pushFrame(.init(
-        object.CompiledFunction{ .instructions = bytecode.instructions, .num_locals = 0 },
+        object.CompiledFunction{
+            .instructions = bytecode.instructions,
+            .num_locals = 0,
+            .num_parameters = 0,
+        },
         0,
     ));
 
@@ -189,12 +194,11 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
                 try self.executeIndexExpression(left, index);
             },
             .call => {
-                const obj = self.stack[self.sp - 1];
-                if (@as(object.ObjectType, obj) != .comp_func) return Error.CallingNonFunction;
+                const width = 1;
+                const num_args = code.readOperandInt(width, ins[ip + 1 ..][0..width]);
+                self.currentFrame().ip += width;
 
-                const frame: Frame = .init(obj.comp_func, self.sp);
-                self.pushFrame(frame);
-                self.sp = frame.base_pointer + obj.comp_func.num_locals;
+                try self.callFunction(num_args);
             },
             .return_value => {
                 const return_val = self.pop() orelse return Error.StackExhausted;
@@ -423,6 +427,17 @@ fn buildHash(self: *Self, start_index: usize, end_index: usize) !object.Object {
     }
 
     return .{ .hash = .{ .pairs = pairs } };
+}
+
+fn callFunction(self: *Self, num_args: u8) !void {
+    const obj = self.stack[self.sp - 1 - num_args];
+
+    if (@as(object.ObjectType, obj) != .comp_func) return Error.CallingNonFunction;
+    if (num_args != obj.comp_func.num_parameters) return Error.WrongNumberOfArgs;
+
+    const frame: Frame = .init(obj.comp_func, self.sp - num_args);
+    self.pushFrame(frame);
+    self.sp = frame.base_pointer + obj.comp_func.num_locals;
 }
 
 // Testing
@@ -729,6 +744,92 @@ test "calling functions with bindings" {
     };
 
     try runVmTests(tests);
+}
+
+test "calling functions with args and bindings" {
+    const tests: []const VmTestCase = &.{
+        .{
+            .input =
+            \\ let identity = fn(a) { a; };
+            \\ identity(4);
+            ,
+            .expected = .{ .int = 4 },
+        },
+        .{
+            .input =
+            \\ let sum = fn(a, b) { a + b; };
+            \\ sum(1, 2);
+            ,
+            .expected = .{ .int = 3 },
+        },
+        .{
+            .input =
+            \\ let sum = fn(a, b) {
+            \\     let c = a + b;
+            \\     c;
+            \\ };
+            \\ let outer = fn() {
+            \\     sum(1, 2) + sum(3, 4);
+            \\ };
+            \\ outer();
+            ,
+            .expected = .{ .int = 10 },
+        },
+        .{
+            .input =
+            \\ let globalNum = 10;
+            \\ 
+            \\ let sum = fn(a, b) {
+            \\     let c = a + b;
+            \\     c + globalNum;
+            \\ };
+            \\ 
+            \\ let outer = fn() {
+            \\     sum(1, 2) + sum(3, 4) + globalNum;
+            \\ };
+            \\ 
+            \\ outer() + globalNum;
+            ,
+            .expected = .{ .int = 50 },
+        },
+    };
+
+    try runVmTests(tests);
+}
+
+test "calling functions with wrong args" {
+    const tests: []const VmTestCase = &.{
+        .{
+            .input = "fn() { 1; }(1);",
+            .expected = null,
+        },
+        .{
+            .input = "fn(a) { a; }();",
+            .expected = null,
+        },
+        .{
+            .input = "fn(a, b) { a + b; }(1);",
+            .expected = null,
+        },
+    };
+
+    const alloc = std.testing.allocator;
+
+    for (tests) |tt| {
+        var program, var p = try parse(alloc, tt.input);
+        defer program.val.program.deinit(alloc);
+        defer p.deinit(alloc);
+
+        var compiler: Compiler = try .init(alloc);
+        defer compiler.deinit(alloc);
+
+        try compiler.compile(alloc, program);
+        const bcode = compiler.bytecode();
+
+        var vm = try create(alloc);
+        defer vm.destroy(alloc);
+        try std.testing.expectError(Error.WrongNumberOfArgs, vm.run(bcode));
+    }
 }
 
 fn parse(alloc: std.mem.Allocator, input: []const u8) !struct { ast.Node(.Common), Parser } {
