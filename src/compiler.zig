@@ -14,6 +14,7 @@ const SymbolTable = struct {
     const Scope = enum {
         global,
         local,
+        builtin,
     };
 
     const Symbol = struct {
@@ -81,6 +82,19 @@ const SymbolTable = struct {
 
         try self.store.put(alloc, symbol.name, symbol);
         self.num_definitions += 1;
+
+        return symbol;
+    }
+
+    pub fn defineBuiltin(self: *@This(), alloc: std.mem.Allocator, index: usize, name: []const u8) !Symbol {
+        const symbol: Symbol = .{
+            .name = try alloc.dupe(u8, name),
+            .scope = .builtin,
+            .index = index,
+        };
+        errdefer alloc.free(symbol.name);
+
+        try self.store.put(alloc, symbol.name, symbol);
 
         return symbol;
     }
@@ -188,6 +202,10 @@ pub fn init(alloc: std.mem.Allocator) !Self {
         .scopes = .empty,
         .scopeIndex = 0,
     };
+
+    inline for (std.meta.fields(object.BuiltinFnIdent)) |f| {
+        _ = try self.symbol_table.defineBuiltin(alloc, f.value, f.name);
+    }
 
     try self.scopes.append(alloc, main_scope);
 
@@ -436,7 +454,11 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
             const symbol = self.symbol_table.resolve(ident_exp.value) orelse return Error.UndefinedVariable;
             _ = try self.emit(
                 alloc,
-                if (symbol.scope == .global) .get_global else .get_local,
+                switch (symbol.scope) {
+                    .global => .get_global,
+                    .local => .get_local,
+                    .builtin => .get_builtin,
+                },
                 &.{symbol.index},
             );
         },
@@ -1261,6 +1283,48 @@ test "let statements scopes" {
     try runCompilerTests(tests);
 }
 
+test "builtins" {
+    const tests: []const CompilerTestCase = &.{
+        .{
+            .input =
+            \\ len([]);
+            \\ push([], 1);
+            ,
+            .expected_constants = &.{
+                .{ .int = 1 },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.get_builtin, &.{0})),
+                &(try code.make(.array, &.{0})),
+                &(try code.make(.call, &.{1})),
+                &(try code.make(.pop, &.{})),
+                &(try code.make(.get_builtin, &.{4})),
+                &(try code.make(.array, &.{0})),
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.call, &.{2})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input = "fn() { len([]) }",
+            .expected_constants = &.{
+                .{ .instr = &.{
+                    &(try code.make(.get_builtin, &.{0})),
+                    &(try code.make(.array, &.{0})),
+                    &(try code.make(.call, &.{1})),
+                    &(try code.make(.return_value, &.{})),
+                } },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.constant, &.{0})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+    };
+
+    try runCompilerTests(tests);
+}
+
 test "compilation scopes" {
     const alloc = std.testing.allocator;
 
@@ -1365,6 +1429,36 @@ test "resolve nested local" {
     for (tests) |tt| {
         for (tt.expectedSymbols) |sym| {
             const result = tt.table.resolve(sym.name);
+            try std.testing.expect(result != null);
+            try std.testing.expectEqualDeep(sym, result.?);
+        }
+    }
+}
+
+test "define resolve builtins" {
+    const alloc = std.testing.allocator;
+
+    var global = try SymbolTable.create(alloc);
+    defer global.destroy(alloc);
+    var firstLocal = try SymbolTable.createEnclosed(alloc, global);
+    defer firstLocal.destroy(alloc);
+    var secondLocal = try SymbolTable.createEnclosed(alloc, firstLocal);
+    defer secondLocal.destroy(alloc);
+
+    const expected: []const SymbolTable.Symbol = &.{
+        .{ .name = "a", .scope = .builtin, .index = 0 },
+        .{ .name = "c", .scope = .builtin, .index = 1 },
+        .{ .name = "e", .scope = .builtin, .index = 2 },
+        .{ .name = "f", .scope = .builtin, .index = 3 },
+    };
+
+    for (expected, 0..) |v, i| {
+        _ = try global.defineBuiltin(alloc, i, v.name);
+    }
+
+    inline for (.{ global, firstLocal, secondLocal }) |table| {
+        for (expected) |sym| {
+            const result = table.resolve(sym.name);
             try std.testing.expect(result != null);
             try std.testing.expectEqualDeep(sym, result.?);
         }

@@ -2,8 +2,6 @@ const std = @import("std");
 const ast = @import("ast.zig");
 const code = @import("code.zig");
 
-const BuiltinFunction = *const fn (alloc: std.mem.Allocator, args: []Object) anyerror!Object;
-
 pub const ObjectType = enum {
     integer,
     boolean,
@@ -73,6 +71,7 @@ pub const Object = union(ObjectType) {
             .builtin => "BUILTIN",
             .array => "ARRAY",
             .hash => "HASH",
+            .comp_func => "COMPILED_FUNCTION",
         };
     }
 };
@@ -355,6 +354,112 @@ pub const String = struct {
     }
 };
 
+pub const BuiltinFunction = *const fn (alloc: std.mem.Allocator, args: []Object) anyerror!Object;
+
+pub fn lenBuiltin(alloc: std.mem.Allocator, args: []Object) !Object {
+    if (args.len != 1) return try newError(alloc, "wrong number of arguments. got={d}, want=1", .{args.len});
+
+    return switch (args[0]) {
+        .string => |str| Object{ .integer = .{ .value = @intCast(str.value.len) } },
+        .array => |arr| Object{ .integer = .{ .value = @intCast(arr.elements.len) } },
+        else => try newError(alloc, "argument to `len` not supported, got {s}", .{args[0].tagName()}),
+    };
+}
+
+pub fn firstBuiltin(alloc: std.mem.Allocator, args: []Object) !Object {
+    if (args.len != 1) return try newError(alloc, "wrong number of arguments. got={d}, want=1", .{args.len});
+    if (@as(ObjectType, args[0]) != .array)
+        return try newError(alloc, "argument to `first` must be ARRAY, got {s}", .{args[0].tagName()});
+
+    const elems = args[0].array.elements;
+    if (elems.len > 0) return elems[0];
+
+    return nil;
+}
+
+pub fn lastBuiltin(alloc: std.mem.Allocator, args: []Object) !Object {
+    if (args.len != 1) return try newError(alloc, "wrong number of arguments. got={d}, want=1", .{args.len});
+    if (@as(ObjectType, args[0]) != .array)
+        return try newError(alloc, "argument to `last` must be ARRAY, got {s}", .{args[0].tagName()});
+
+    const elems = args[0].array.elements;
+    if (elems.len > 0) return elems[elems.len - 1];
+
+    return nil;
+}
+
+pub fn restBuiltin(alloc: std.mem.Allocator, args: []Object) !Object {
+    if (args.len != 1) return try newError(alloc, "wrong number of arguments. got={d}, want=1", .{args.len});
+    if (@as(ObjectType, args[0]) != .array)
+        return try newError(alloc, "argument to `rest` must be ARRAY, got {s}", .{args[0].tagName()});
+
+    const elems = args[0].array.elements;
+    if (elems.len > 0) {
+        return Object{ .array = try Array.init(alloc, elems[1..]) };
+    }
+
+    return nil;
+}
+
+pub fn pushBuiltin(alloc: std.mem.Allocator, args: []Object) !Object {
+    if (args.len != 2) return try newError(alloc, "wrong number of arguments. got={d}, want=2", .{args.len});
+    if (@as(ObjectType, args[0]) != .array)
+        return try newError(alloc, "argument to `push` must be ARRAY, got {s}", .{args[0].tagName()});
+
+    const elems = args[0].array.elements;
+    return .{ .array = .{
+        .elements = try std.mem.concat(
+            alloc,
+            Object,
+            &[2][]const Object{ elems, &[_]Object{args[1]} },
+        ),
+    } };
+}
+
+pub fn putsBuiltin(alloc: std.mem.Allocator, args: []Object) !Object {
+    if (args.len == 0) return nil;
+
+    var buf: [1024]u8 = undefined;
+    var threaded: std.Io.Threaded = .init(alloc, .{});
+    var out_writer = std.Io.File.stdout().writer(threaded.io(), &buf);
+    var writer = &out_writer.interface;
+    for (args) |arg| {
+        try arg.inspect(writer);
+        _ = try writer.write("\n");
+        try writer.flush();
+    }
+
+    return nil;
+}
+
+pub const BuiltinFnIdent = enum(u8) {
+    len,
+    first,
+    last,
+    rest,
+    push,
+    puts,
+
+    pub fn getObjectByName(ident: []const u8) ?Object {
+        const ident_name = std.meta.stringToEnum(@This(), ident) orelse return null;
+
+        return ident_name.getObject();
+    }
+
+    pub fn getObject(self: @This()) Object {
+        return Object{ .builtin = .{
+            .func = switch (self) {
+                .len => lenBuiltin,
+                .first => firstBuiltin,
+                .last => lastBuiltin,
+                .rest => restBuiltin,
+                .push => pushBuiltin,
+                .puts => putsBuiltin,
+            },
+        } };
+    }
+};
+
 pub const Builtin = struct {
     func: BuiltinFunction,
 
@@ -495,6 +600,12 @@ pub const Hash = struct {
     }
 };
 
+pub fn newError(alloc: std.mem.Allocator, comptime format: []const u8, args: anytype) !Object {
+    return Object{
+        .err = .{ .message = try std.fmt.allocPrint(alloc, format, args) },
+    };
+}
+
 pub const Error = struct {
     message: []const u8,
 
@@ -512,6 +623,8 @@ pub const Error = struct {
         alloc.free(self.message);
     }
 };
+
+pub const nil = Object{ .nil = .{} };
 
 pub const Nil = struct {
     fn inspect(_: @This(), out: *std.Io.Writer) !void {

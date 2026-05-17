@@ -7,113 +7,6 @@ const Parser = @import("parser.zig");
 
 const true_obj = object.Object{ .boolean = .{ .value = true } };
 const false_obj = object.Object{ .boolean = .{ .value = false } };
-const nil_obj = object.Object{ .nil = .{} };
-
-fn lenBuiltin(alloc: std.mem.Allocator, args: []object.Object) !object.Object {
-    if (args.len != 1) return try newError(alloc, "wrong number of arguments. got={d}, want=1", .{args.len});
-
-    return switch (args[0]) {
-        .string => |str| object.Object{ .integer = .{ .value = @intCast(str.value.len) } },
-        .array => |arr| object.Object{ .integer = .{ .value = @intCast(arr.elements.len) } },
-        else => try newError(alloc, "argument to `len` not supported, got {s}", .{args[0].tagName()}),
-    };
-}
-
-fn firstBuiltin(alloc: std.mem.Allocator, args: []object.Object) !object.Object {
-    if (args.len != 1) return try newError(alloc, "wrong number of arguments. got={d}, want=1", .{args.len});
-    if (@as(object.ObjectType, args[0]) != .array)
-        return try newError(alloc, "argument to `first` must be ARRAY, got {s}", .{args[0].tagName()});
-
-    const elems = args[0].array.elements;
-    if (elems.len > 0) return elems[0];
-
-    return nil_obj;
-}
-
-fn lastBuiltin(alloc: std.mem.Allocator, args: []object.Object) !object.Object {
-    if (args.len != 1) return try newError(alloc, "wrong number of arguments. got={d}, want=1", .{args.len});
-    if (@as(object.ObjectType, args[0]) != .array)
-        return try newError(alloc, "argument to `last` must be ARRAY, got {s}", .{args[0].tagName()});
-
-    const elems = args[0].array.elements;
-    if (elems.len > 0) return elems[elems.len - 1];
-
-    return nil_obj;
-}
-
-fn restBuiltin(alloc: std.mem.Allocator, args: []object.Object) !object.Object {
-    if (args.len != 1) return try newError(alloc, "wrong number of arguments. got={d}, want=1", .{args.len});
-    if (@as(object.ObjectType, args[0]) != .array)
-        return try newError(alloc, "argument to `rest` must be ARRAY, got {s}", .{args[0].tagName()});
-
-    const elems = args[0].array.elements;
-    if (elems.len > 0) {
-        return object.Object{ .array = try object.Array.init(alloc, elems[1..]) };
-    }
-
-    return nil_obj;
-}
-
-fn pushBuiltin(alloc: std.mem.Allocator, args: []object.Object) !object.Object {
-    if (args.len != 2) return try newError(alloc, "wrong number of arguments. got={d}, want=2", .{args.len});
-    if (@as(object.ObjectType, args[0]) != .array)
-        return try newError(alloc, "argument to `push` must be ARRAY, got {s}", .{args[0].tagName()});
-
-    const elems = args[0].array.elements;
-    return .{ .array = .{
-        .elements = try std.mem.concat(
-            alloc,
-            object.Object,
-            &[2][]const object.Object{ elems, &[_]object.Object{args[1]} },
-        ),
-    } };
-}
-
-fn putsBuiltin(alloc: std.mem.Allocator, args: []object.Object) !object.Object {
-    if (args.len == 0) return nil_obj;
-
-    var buf: [1024]u8 = undefined;
-    var threaded: std.Io.Threaded = .init(alloc, .{});
-    var out_writer = std.Io.File.stdout().writer(threaded.io(), &buf);
-    var writer = &out_writer.interface;
-    for (args) |arg| {
-        try arg.inspect(writer);
-        _ = try writer.write("\n");
-        try writer.flush();
-    }
-
-    return nil_obj;
-}
-
-const BuiltinFnIdent = enum {
-    len,
-    first,
-    last,
-    rest,
-    push,
-    puts,
-
-    fn getObject(ident: []const u8) ?object.Object {
-        const ident_name = std.meta.stringToEnum(@This(), ident) orelse return null;
-
-        return object.Object{ .builtin = .{
-            .func = switch (ident_name) {
-                .len => lenBuiltin,
-                .first => firstBuiltin,
-                .last => lastBuiltin,
-                .rest => restBuiltin,
-                .push => pushBuiltin,
-                .puts => putsBuiltin,
-            },
-        } };
-    }
-};
-
-fn newError(alloc: std.mem.Allocator, comptime format: []const u8, args: anytype) !object.Object {
-    return object.Object{
-        .err = .{ .message = try std.fmt.allocPrint(alloc, format, args) },
-    };
-}
 
 fn isError(obj: object.Object) bool {
     return @as(object.ObjectType, obj) == .err;
@@ -128,7 +21,7 @@ pub fn eval(alloc: std.mem.Allocator, node: *const ast.Node(.Common), env: *obje
 }
 
 fn evalProgram(alloc: std.mem.Allocator, program: ast.Program, env: *object.Environment) anyerror!object.Object {
-    var result = nil_obj;
+    var result = object.nil;
 
     for (program.statements) |stmt| {
         result = try evalStatement(alloc, &stmt, env);
@@ -257,7 +150,7 @@ fn applyFunction(alloc: std.mem.Allocator, func: object.Object, args: []object.O
         .builtin => |builtin| {
             return try builtin.func(alloc, args);
         },
-        else => return newError(alloc, "not a function: {s}", .{func.tagName()}),
+        else => return object.newError(alloc, "not a function: {s}", .{func.tagName()}),
     }
 }
 
@@ -278,7 +171,7 @@ fn unwrapReturnValue(obj: object.Object) object.Object {
 }
 
 fn evalBlockStatements(alloc: std.mem.Allocator, block: ast.BlockStatement, env: *object.Environment) anyerror!object.Object {
-    var result = nil_obj;
+    var result = object.nil;
 
     for (block.statements) |stmt| {
         result = try evalStatement(alloc, &stmt, env);
@@ -294,9 +187,9 @@ fn evalBlockStatements(alloc: std.mem.Allocator, block: ast.BlockStatement, env:
 
 fn evalIdentifier(alloc: std.mem.Allocator, node: ast.Identifier, env: *object.Environment) !object.Object {
     if (env.get(node.value)) |obj| return obj;
-    if (BuiltinFnIdent.getObject(node.value)) |obj| return obj;
+    if (object.BuiltinFnIdent.getObjectByName(node.value)) |obj| return obj;
 
-    return newError(alloc, "identifier not found: {s}", .{node.value});
+    return object.newError(alloc, "identifier not found: {s}", .{node.value});
 }
 
 const Operator = enum {
@@ -312,11 +205,11 @@ const Operator = enum {
 };
 
 fn evalPrefixExpression(alloc: std.mem.Allocator, operator: []const u8, right: object.Object, _: *object.Environment) !object.Object {
-    const op = std.meta.stringToEnum(Operator, operator) orelse return nil_obj;
+    const op = std.meta.stringToEnum(Operator, operator) orelse return object.nil;
     switch (op) {
         .@"!" => return evalBangOperatorExpression(right),
         .@"-" => return try evalMinusPrefixOperatorExpression(alloc, right),
-        else => return try newError(alloc, "unknown operator: {s}{s}", .{
+        else => return try object.newError(alloc, "unknown operator: {s}{s}", .{
             operator,
             right.tagName(),
         }),
@@ -334,7 +227,7 @@ fn evalBangOperatorExpression(right: object.Object) object.Object {
 fn evalMinusPrefixOperatorExpression(alloc: std.mem.Allocator, right: object.Object) !object.Object {
     // check that the tag active for object union is indeed .integer
     if (@as(object.ObjectType, right) != .integer) {
-        return try newError(alloc, "unknown operator: -{s}", .{right.tagName()});
+        return try object.newError(alloc, "unknown operator: -{s}", .{right.tagName()});
     }
 
     return object.Object{ .integer = .{ .value = -right.integer.value } };
@@ -347,11 +240,11 @@ fn evalInfixExpression(
     right: object.Object,
     _: *object.Environment,
 ) !object.Object {
-    const op = std.meta.stringToEnum(Operator, operator) orelse return nil_obj;
+    const op = std.meta.stringToEnum(Operator, operator) orelse return object.nil;
 
     // check that the tags active for left/right objects are the same
     if (@as(object.ObjectType, left) != @as(object.ObjectType, right)) {
-        return try newError(alloc, "type mismatch: {s} {s} {s}", .{
+        return try object.newError(alloc, "type mismatch: {s} {s} {s}", .{
             left.tagName(),
             operator,
             right.tagName(),
@@ -363,7 +256,7 @@ fn evalInfixExpression(
         return switch (op) {
             .@"==" => if (left.boolean.value == right.boolean.value) true_obj else false_obj,
             .@"!=" => if (left.boolean.value != right.boolean.value) true_obj else false_obj,
-            else => try newError(alloc, "unknown operator: {s} {s} {s}", .{
+            else => try object.newError(alloc, "unknown operator: {s} {s} {s}", .{
                 left.tagName(),
                 operator,
                 right.tagName(),
@@ -388,13 +281,15 @@ fn evalIntegerInfixExpression(alloc: std.mem.Allocator, operator: Operator, left
         .@"-" => return object.Object{ .integer = .{ .value = left_val - right_val } },
         .@"*" => return object.Object{ .integer = .{ .value = left_val * right_val } },
         .@"/" => return object.Object{
-            .integer = .{ .value = std.math.divExact(i64, left_val, right_val) catch return nil_obj },
+            .integer = .{
+                .value = std.math.divExact(i64, left_val, right_val) catch return object.nil,
+            },
         },
         .@"<" => return if (left_val < right_val) true_obj else false_obj,
         .@">" => return if (left_val > right_val) true_obj else false_obj,
         .@"==" => return if (left_val == right_val) true_obj else false_obj,
         .@"!=" => return if (left_val != right_val) true_obj else false_obj,
-        else => return try newError(alloc, "unknown operator: {s} {s} {s}", .{
+        else => return try object.newError(alloc, "unknown operator: {s} {s} {s}", .{
             left.tagName(),
             @tagName(operator),
             right.tagName(),
@@ -403,7 +298,7 @@ fn evalIntegerInfixExpression(alloc: std.mem.Allocator, operator: Operator, left
 }
 
 fn evalStringInfixExpression(alloc: std.mem.Allocator, operator: Operator, left: object.Object, right: object.Object) !object.Object {
-    if (operator != .@"+") return try newError(
+    if (operator != .@"+") return try object.newError(
         alloc,
         "unknown operator: {s} {s} {s}",
         .{ left.tagName(), @tagName(operator), right.tagName() },
@@ -433,7 +328,7 @@ fn evalIfExpression(alloc: std.mem.Allocator, ie: ast.IfExpression, env: *object
             env,
         );
     } else {
-        return nil_obj;
+        return object.nil;
     }
 }
 
@@ -442,9 +337,9 @@ fn evalIndexExpression(alloc: std.mem.Allocator, left: object.Object, index: obj
         .array => if (@as(object.ObjectType, index) == .integer)
             try evalArrayIndexExpression(left, index)
         else
-            try newError(alloc, "index operator not supported: {s}", .{left.tagName()}),
+            try object.newError(alloc, "index operator not supported: {s}", .{left.tagName()}),
         .hash => try evalHashIndexExpression(alloc, left, index),
-        else => try newError(alloc, "index operator not supported: {s}", .{left.tagName()}),
+        else => try object.newError(alloc, "index operator not supported: {s}", .{left.tagName()}),
     };
 }
 
@@ -453,7 +348,7 @@ fn evalArrayIndexExpression(array: object.Object, index: object.Object) !object.
     const idx = index.integer.value;
     const max = arrObj.elements.len - 1;
 
-    if (idx < 0 or idx > max) return nil_obj;
+    if (idx < 0 or idx > max) return object.nil;
 
     return arrObj.elements[@intCast(idx)];
 }
@@ -461,10 +356,10 @@ fn evalArrayIndexExpression(array: object.Object, index: object.Object) !object.
 fn evalHashIndexExpression(alloc: std.mem.Allocator, hash: object.Object, index: object.Object) !object.Object {
     const hashObj = hash.hash;
     const key = index.toHashable() catch {
-        return try newError(alloc, "unusable as hash key: {s}", .{index.tagName()});
+        return try object.newError(alloc, "unusable as hash key: {s}", .{index.tagName()});
     };
 
-    return hashObj.pairs.get(key) orelse nil_obj;
+    return hashObj.pairs.get(key) orelse object.nil;
 }
 
 fn evalHashLiteral(alloc: std.mem.Allocator, node: ast.HashLiteral, env: *object.Environment) !object.Object {

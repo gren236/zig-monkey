@@ -18,6 +18,7 @@ pub const Error = error{
     UnsupportedIndexOperator,
     CallingNonFunction,
     WrongNumberOfArgs,
+    BuiltinNotFound,
 };
 
 const Frame = struct {
@@ -45,6 +46,7 @@ const max_frames = 1024;
 const string_arena_size = 1024 * 1024 * 5; // 5mb
 const array_arena_size = 1024 * 1024 * 5; // 5mb
 const hash_arena_size = 1024 * 1024 * 5; // 5mb
+const builtins_arena_size = 1024 * 1024 * 5; // 5mb
 
 const true_obj: object.Object = .{ .boolean = .{ .value = true } };
 const false_obj: object.Object = .{ .boolean = .{ .value = false } };
@@ -59,6 +61,8 @@ array_arena: [array_arena_size]u8,
 array_fba: std.heap.FixedBufferAllocator,
 hash_arena: [hash_arena_size]u8,
 hash_fba: std.heap.FixedBufferAllocator,
+builtins_arena: [builtins_arena_size]u8,
+builtins_fba: std.heap.FixedBufferAllocator,
 
 frames: [max_frames]Frame,
 frames_index: usize,
@@ -80,11 +84,14 @@ pub fn create(alloc: std.mem.Allocator) !*Self {
         .array_fba = undefined,
         .hash_arena = undefined,
         .hash_fba = undefined,
+        .builtins_arena = undefined,
+        .builtins_fba = undefined,
     };
 
     self.string_fba = .init(&self.string_arena);
     self.array_fba = .init(&self.array_arena);
     self.hash_fba = .init(&self.hash_arena);
+    self.builtins_fba = .init(&self.builtins_arena);
 
     return self;
 }
@@ -175,6 +182,8 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
                 self.currentFrame().ip += width;
 
                 const array = try self.buildArray(self.sp - num_elements, self.sp);
+                self.sp = self.sp - num_elements;
+
                 try self.push(array);
             },
             .hash => {
@@ -198,7 +207,7 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
                 const num_args = code.readOperandInt(width, ins[ip + 1 ..][0..width]);
                 self.currentFrame().ip += width;
 
-                try self.callFunction(num_args);
+                try self.executeCall(num_args);
             },
             .return_value => {
                 const return_val = self.pop() orelse return Error.StackExhausted;
@@ -231,6 +240,16 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
                 const frame = self.currentFrame();
 
                 try self.push(self.stack[frame.base_pointer + local_index]);
+            },
+            .get_builtin => {
+                const width = 1;
+                const builtin_index = code.readOperandInt(width, ins[ip + 1 ..][0..width]);
+                self.currentFrame().ip += width;
+
+                const builtin = std.enums.fromInt(object.BuiltinFnIdent, builtin_index) orelse
+                    return Error.BuiltinNotFound;
+
+                try self.push(builtin.getObject());
             },
             .nil => try self.push(nil),
         }
@@ -429,15 +448,31 @@ fn buildHash(self: *Self, start_index: usize, end_index: usize) !object.Object {
     return .{ .hash = .{ .pairs = pairs } };
 }
 
-fn callFunction(self: *Self, num_args: u8) !void {
+fn executeCall(self: *Self, num_args: u8) !void {
     const obj = self.stack[self.sp - 1 - num_args];
 
-    if (@as(object.ObjectType, obj) != .comp_func) return Error.CallingNonFunction;
-    if (num_args != obj.comp_func.num_parameters) return Error.WrongNumberOfArgs;
+    switch (obj) {
+        .comp_func => |func| try self.callFunction(func, num_args),
+        .builtin => |func| try self.callBuiltin(func, num_args),
+        else => return Error.CallingNonFunction,
+    }
+}
 
-    const frame: Frame = .init(obj.comp_func, self.sp - num_args);
+fn callFunction(self: *Self, func: object.CompiledFunction, num_args: u8) !void {
+    if (num_args != func.num_parameters) return Error.WrongNumberOfArgs;
+
+    const frame: Frame = .init(func, self.sp - num_args);
     self.pushFrame(frame);
-    self.sp = frame.base_pointer + obj.comp_func.num_locals;
+    self.sp = frame.base_pointer + func.num_locals;
+}
+
+fn callBuiltin(self: *Self, builtin: object.Builtin, num_args: u8) !void {
+    const args = self.stack[self.sp - num_args .. self.sp];
+
+    const result = try builtin.func(self.builtins_fba.allocator(), args);
+    self.sp = self.sp - num_args - 1;
+
+    try self.push(result);
 }
 
 // Testing
@@ -453,6 +488,7 @@ const VmTestCase = struct {
             key: object.Hashable,
             val: i64,
         },
+        err: []const u8,
     },
 };
 
@@ -832,6 +868,85 @@ test "calling functions with wrong args" {
     }
 }
 
+test "builtin functions" {
+    const tests: []const VmTestCase = &.{
+        .{
+            .input = "len(\"\")",
+            .expected = .{ .int = 0 },
+        },
+        .{
+            .input = "len(\"four\")",
+            .expected = .{ .int = 4 },
+        },
+        .{
+            .input = "len(\"hello world\")",
+            .expected = .{ .int = 11 },
+        },
+        .{
+            .input = "len(1)",
+            .expected = .{ .err = "argument to `len` not supported, got INTEGER" },
+        },
+        .{
+            .input = "len(\"one\", \"two\")",
+            .expected = .{ .err = "wrong number of arguments. got=2, want=1" },
+        },
+        .{
+            .input = "len([1, 2, 3])",
+            .expected = .{ .int = 3 },
+        },
+        .{
+            .input = "len([])",
+            .expected = .{ .int = 0 },
+        },
+        .{
+            .input = "puts(\"hello\", \"world!\")",
+            .expected = null,
+        },
+        .{
+            .input = "first([1, 2, 3])",
+            .expected = .{ .int = 1 },
+        },
+        .{
+            .input = "first([])",
+            .expected = null,
+        },
+        .{
+            .input = "first(1)",
+            .expected = .{ .err = "argument to `first` must be ARRAY, got INTEGER" },
+        },
+        .{
+            .input = "last([1, 2, 3])",
+            .expected = .{ .int = 3 },
+        },
+        .{
+            .input = "last([])",
+            .expected = null,
+        },
+        .{
+            .input = "last(1)",
+            .expected = .{ .err = "argument to `last` must be ARRAY, got INTEGER" },
+        },
+        .{
+            .input = "rest([1, 2, 3])",
+            .expected = .{ .arr = &.{ 2, 3 } },
+        },
+        .{
+            .input = "rest([])",
+            .expected = null,
+        },
+        .{
+            .input = "push([], 1)",
+            .expected = .{ .arr = &.{1} },
+        },
+        .{
+            .input = "push(1, 1)",
+            .expected = .{ .err = "argument to `push` must be ARRAY, got INTEGER" },
+        },
+    };
+
+    try runVmTests(tests);
+}
+
 fn parse(alloc: std.mem.Allocator, input: []const u8) !struct { ast.Node(.Common), Parser } {
     var l = Lexer.init(input);
     var p = Parser.init(&l);
@@ -880,6 +995,11 @@ fn testExpectedObject(expected: @FieldType(VmTestCase, "expected"), actual: obje
                 try testIntegerObject(exp_item.val, val.?);
             }
         },
+        .err => |exp| {
+            try std.testing.expectEqual(object.ObjectType.err, @as(object.ObjectType, actual));
+            const act_err = actual.err;
+            try std.testing.expectEqualStrings(exp, act_err.message);
+        },
     }
 }
 
@@ -887,6 +1007,8 @@ fn runVmTests(tests: []const VmTestCase) !void {
     const alloc = std.testing.allocator;
 
     for (tests) |tt| {
+        std.debug.print("TESTING INPUT: {s}\n", .{tt.input});
+
         var program, var p = try parse(alloc, tt.input);
         defer program.val.program.deinit(alloc);
         defer p.deinit(alloc);
