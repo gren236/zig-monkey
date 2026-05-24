@@ -11,6 +11,7 @@ pub const ObjectType = enum {
     env,
     func,
     comp_func,
+    closure,
     string,
     builtin,
     array,
@@ -26,6 +27,7 @@ pub const Object = union(ObjectType) {
     env: Environment,
     func: Function,
     comp_func: CompiledFunction,
+    closure: Closure,
     string: String,
     builtin: Builtin,
     array: Array,
@@ -72,6 +74,7 @@ pub const Object = union(ObjectType) {
             .array => "ARRAY",
             .hash => "HASH",
             .comp_func => "COMPILED_FUNCTION",
+            .closure => "CLOSURE",
         };
     }
 };
@@ -315,6 +318,44 @@ pub const CompiledFunction = struct {
         _ = try out.write("CompiledFunction[");
         try code.writeInstructions(self.instructions, out);
         _ = try out.write("]");
+    }
+};
+
+pub const Closure = struct {
+    func: *const CompiledFunction,
+    free: []Object,
+
+    pub fn init(alloc: std.mem.Allocator, func: *const CompiledFunction, free: []const Object) !Closure {
+        const func_ptr = try alloc.create(CompiledFunction);
+        func_ptr.* = (try func.clone(alloc)).comp_func;
+
+        var free_new = try alloc.alloc(Object, free.len);
+        for (free, 0..free.len) |obj, i| {
+            free_new[i] = try obj.clone(alloc);
+        }
+
+        return .{
+            .func = func_ptr,
+            .free = free_new,
+        };
+    }
+
+    fn clone(self: @This(), alloc: std.mem.Allocator) !Object {
+        return .{ .closure = try Closure.init(alloc, self.func, self.free) };
+    }
+
+    fn deinit(self: @This(), alloc: std.mem.Allocator) void {
+        self.func.deinit(alloc);
+        alloc.destroy(self.func);
+
+        for (self.free) |obj| {
+            obj.deinit(alloc);
+        }
+        alloc.free(self.free);
+    }
+
+    fn inspect(self: @This(), out: *std.Io.Writer) !void {
+        try out.print("Closure[{}]", .{self});
     }
 };
 

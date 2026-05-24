@@ -19,23 +19,24 @@ pub const Error = error{
     CallingNonFunction,
     WrongNumberOfArgs,
     BuiltinNotFound,
+    NotAFunction,
 };
 
 const Frame = struct {
-    func: object.CompiledFunction,
+    cl: object.Closure,
     ip: isize,
     base_pointer: usize,
 
-    fn init(func: object.CompiledFunction, base_pointer: usize) Frame {
+    fn init(cl: object.Closure, base_pointer: usize) Frame {
         return .{
-            .func = func,
+            .cl = cl,
             .ip = -1,
             .base_pointer = base_pointer,
         };
     }
 
     fn instructions(self: *const Frame) code.Instructions {
-        return self.func.instructions;
+        return self.cl.func.instructions;
     }
 };
 
@@ -115,14 +116,13 @@ fn popFrame(self: *Self) Frame {
 }
 
 pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
-    self.pushFrame(.init(
-        object.CompiledFunction{
-            .instructions = bytecode.instructions,
-            .num_locals = 0,
-            .num_parameters = 0,
-        },
-        0,
-    ));
+    const runFunc: object.CompiledFunction = object.CompiledFunction{
+        .instructions = bytecode.instructions,
+        .num_locals = 0,
+        .num_parameters = 0,
+    };
+
+    self.pushFrame(.init(object.Closure{ .func = &runFunc, .free = &.{} }, 0));
 
     while (self.currentFrame().ip < self.currentFrame().instructions().len - 1) {
         self.currentFrame().ip += 1;
@@ -250,6 +250,16 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
                     return Error.BuiltinNotFound;
 
                 try self.push(builtin.getObject());
+            },
+            .closure => {
+                const const_index = code.readOperandInt(2, ins[ip + 1 ..][0..2]);
+                _ = code.readOperandInt(1, ins[ip + 3 ..][0..1]); // TODO implement
+                self.currentFrame().ip += 3;
+
+                try self.push(.{ .closure = .{
+                    .func = &bytecode.constants[const_index].comp_func,
+                    .free = &.{},
+                } });
             },
             .nil => try self.push(nil),
         }
@@ -452,18 +462,18 @@ fn executeCall(self: *Self, num_args: u8) !void {
     const obj = self.stack[self.sp - 1 - num_args];
 
     switch (obj) {
-        .comp_func => |func| try self.callFunction(func, num_args),
+        .closure => |func| try self.callClosure(func, num_args),
         .builtin => |func| try self.callBuiltin(func, num_args),
         else => return Error.CallingNonFunction,
     }
 }
 
-fn callFunction(self: *Self, func: object.CompiledFunction, num_args: u8) !void {
-    if (num_args != func.num_parameters) return Error.WrongNumberOfArgs;
+fn callClosure(self: *Self, cl: object.Closure, num_args: u8) !void {
+    if (num_args != cl.func.num_parameters) return Error.WrongNumberOfArgs;
 
-    const frame: Frame = .init(func, self.sp - num_args);
+    const frame: Frame = .init(cl, self.sp - num_args);
     self.pushFrame(frame);
-    self.sp = frame.base_pointer + func.num_locals;
+    self.sp = frame.base_pointer + cl.func.num_locals;
 }
 
 fn callBuiltin(self: *Self, builtin: object.Builtin, num_args: u8) !void {

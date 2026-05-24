@@ -525,7 +525,11 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
                 },
             };
 
-            _ = try self.emit(alloc, .constant, &.{try self.addConstant(alloc, comp_fn)});
+            _ = try self.emit(
+                alloc,
+                .closure,
+                &.{ try self.addConstant(alloc, comp_fn), 0 },
+            );
         },
         .call_exp => |call_exp| {
             try self.compileExpression(alloc, call_exp.function);
@@ -1018,7 +1022,7 @@ test "functions" {
                 } },
             },
             .expected_instructions = @constCast(&[_]code.Instructions{
-                &(try code.make(.constant, &.{2})),
+                &(try code.make(.closure, &.{ 2, 0 })),
                 &(try code.make(.pop, &.{})),
             }),
         },
@@ -1035,7 +1039,7 @@ test "functions" {
                 } },
             },
             .expected_instructions = @constCast(&[_]code.Instructions{
-                &(try code.make(.constant, &.{2})),
+                &(try code.make(.closure, &.{ 2, 0 })),
                 &(try code.make(.pop, &.{})),
             }),
         },
@@ -1052,7 +1056,7 @@ test "functions" {
                 } },
             },
             .expected_instructions = @constCast(&[_]code.Instructions{
-                &(try code.make(.constant, &.{2})),
+                &(try code.make(.closure, &.{ 2, 0 })),
                 &(try code.make(.pop, &.{})),
             }),
         },
@@ -1064,7 +1068,7 @@ test "functions" {
                 } },
             },
             .expected_instructions = @constCast(&[_]code.Instructions{
-                &(try code.make(.constant, &.{0})),
+                &(try code.make(.closure, &.{ 0, 0 })),
                 &(try code.make(.pop, &.{})),
             }),
         },
@@ -1085,7 +1089,7 @@ test "function calls" {
                 } },
             },
             .expected_instructions = @constCast(&[_]code.Instructions{
-                &(try code.make(.constant, &.{1})),
+                &(try code.make(.closure, &.{ 1, 0 })),
                 &(try code.make(.call, &.{0})),
                 &(try code.make(.pop, &.{})),
             }),
@@ -1103,7 +1107,7 @@ test "function calls" {
                 } },
             },
             .expected_instructions = @constCast(&[_]code.Instructions{
-                &(try code.make(.constant, &.{1})),
+                &(try code.make(.closure, &.{ 1, 0 })),
                 &(try code.make(.set_global, &.{0})),
                 &(try code.make(.get_global, &.{0})),
                 &(try code.make(.call, &.{0})),
@@ -1122,7 +1126,7 @@ test "function calls" {
                 .{ .int = 24 },
             },
             .expected_instructions = @constCast(&[_]code.Instructions{
-                &(try code.make(.constant, &.{0})),
+                &(try code.make(.closure, &.{ 0, 0 })),
                 &(try code.make(.set_global, &.{0})),
                 &(try code.make(.get_global, &.{0})),
                 &(try code.make(.constant, &.{1})),
@@ -1144,7 +1148,7 @@ test "function calls" {
                 .{ .int = 26 },
             },
             .expected_instructions = @constCast(&[_]code.Instructions{
-                &(try code.make(.constant, &.{0})),
+                &(try code.make(.closure, &.{ 0, 0 })),
                 &(try code.make(.set_global, &.{0})),
                 &(try code.make(.get_global, &.{0})),
                 &(try code.make(.constant, &.{1})),
@@ -1167,7 +1171,7 @@ test "function calls" {
                 .{ .int = 24 },
             },
             .expected_instructions = @constCast(&[_]code.Instructions{
-                &(try code.make(.constant, &.{0})),
+                &(try code.make(.closure, &.{ 0, 0 })),
                 &(try code.make(.set_global, &.{0})),
                 &(try code.make(.get_global, &.{0})),
                 &(try code.make(.constant, &.{1})),
@@ -1194,7 +1198,7 @@ test "function calls" {
                 .{ .int = 26 },
             },
             .expected_instructions = @constCast(&[_]code.Instructions{
-                &(try code.make(.constant, &.{0})),
+                &(try code.make(.closure, &.{ 0, 0 })),
                 &(try code.make(.set_global, &.{0})),
                 &(try code.make(.get_global, &.{0})),
                 &(try code.make(.constant, &.{1})),
@@ -1226,7 +1230,7 @@ test "let statements scopes" {
             .expected_instructions = @constCast(&[_]code.Instructions{
                 &(try code.make(.constant, &.{0})),
                 &(try code.make(.set_global, &.{0})),
-                &(try code.make(.constant, &.{1})),
+                &(try code.make(.closure, &.{ 1, 0 })),
                 &(try code.make(.pop, &.{})),
             }),
         },
@@ -1247,7 +1251,7 @@ test "let statements scopes" {
                 } },
             },
             .expected_instructions = @constCast(&[_]code.Instructions{
-                &(try code.make(.constant, &.{1})),
+                &(try code.make(.closure, &.{ 1, 0 })),
                 &(try code.make(.pop, &.{})),
             }),
         },
@@ -1274,7 +1278,7 @@ test "let statements scopes" {
                 } },
             },
             .expected_instructions = @constCast(&[_]code.Instructions{
-                &(try code.make(.constant, &.{2})),
+                &(try code.make(.closure, &.{ 2, 0 })),
                 &(try code.make(.pop, &.{})),
             }),
         },
@@ -1316,7 +1320,7 @@ test "builtins" {
                 } },
             },
             .expected_instructions = @constCast(&[_]code.Instructions{
-                &(try code.make(.constant, &.{0})),
+                &(try code.make(.closure, &.{ 0, 0 })),
                 &(try code.make(.pop, &.{})),
             }),
         },

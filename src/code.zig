@@ -35,6 +35,7 @@ pub const Opcode = enum(u8) {
     set_local,
     get_local,
     get_builtin,
+    closure,
 
     inline fn lookup(op: @This()) Definition {
         return switch (op) {
@@ -66,6 +67,7 @@ pub const Opcode = enum(u8) {
             .set_local => .{ .name = "OpSetLocal", .operand_widths = &.{1} },
             .get_local => .{ .name = "OpGetLocal", .operand_widths = &.{1} },
             .get_builtin => .{ .name = "OpGetBuiltin", .operand_widths = &.{1} },
+            .closure => .{ .name = "OpClosure", .operand_widths = &.{ 2, 1 } },
         };
     }
 
@@ -98,6 +100,7 @@ pub fn writeInstructions(ins: Instructions, writer: *std.Io.Writer) !void {
                 switch (def.operand_widths.len) {
                     0 => try writer.print("{s}\n", .{def.name}),
                     1 => try writer.print("{s} {d}\n", .{ def.name, operands[0] }),
+                    2 => try writer.print("{s} {d} {d}\n", .{ def.name, operands[0], operands[1] }),
                     else => return Error.UnexpectedOperandWidth,
                 }
 
@@ -113,6 +116,7 @@ test writeInstructions {
         &(try make(.get_local, &.{1})),
         &(try make(.constant, &.{2})),
         &(try make(.constant, &.{65535})),
+        &(try make(.closure, &.{ 65535, 255 })),
     };
 
     const expected =
@@ -120,6 +124,7 @@ test writeInstructions {
         \\0001 OpGetLocal 1
         \\0003 OpConstant 2
         \\0006 OpConstant 65535
+        \\0009 OpClosure 65535 255
     ;
 
     const alloc = std.testing.allocator;
@@ -162,9 +167,26 @@ test make {
         operands: []const usize,
         expected: []const u8,
     } = comptime &.{
-        .{ .op = .constant, .operands = &[_]usize{65534}, .expected = &[_]u8{ @intFromEnum(Opcode.constant), 255, 254 } },
-        .{ .op = .add, .operands = &[0]usize{}, .expected = &[_]u8{@intFromEnum(Opcode.add)} },
-        .{ .op = .get_local, .operands = &[_]usize{255}, .expected = &[_]u8{ @intFromEnum(Opcode.get_local), 255 } },
+        .{
+            .op = .constant,
+            .operands = &[_]usize{65534},
+            .expected = &[_]u8{ @intFromEnum(Opcode.constant), 255, 254 },
+        },
+        .{
+            .op = .add,
+            .operands = &[0]usize{},
+            .expected = &[_]u8{@intFromEnum(Opcode.add)},
+        },
+        .{
+            .op = .get_local,
+            .operands = &[_]usize{255},
+            .expected = &[_]u8{ @intFromEnum(Opcode.get_local), 255 },
+        },
+        .{
+            .op = .closure,
+            .operands = &[_]usize{ 65534, 255 },
+            .expected = &[_]u8{ @intFromEnum(Opcode.closure), 255, 254, 255 },
+        },
     };
 
     inline for (tests) |tt| {
@@ -215,6 +237,7 @@ test readOperands {
     } = comptime &.{
         .{ .op = .constant, .operands = &.{65535}, .bytes_read = 2 },
         .{ .op = .get_local, .operands = &.{255}, .bytes_read = 1 },
+        .{ .op = .closure, .operands = &.{ 65535, 255 }, .bytes_read = 3 },
     };
 
     inline for (tests) |tt| {
