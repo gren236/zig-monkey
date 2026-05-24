@@ -36,6 +36,7 @@ pub const Opcode = enum(u8) {
     get_local,
     get_builtin,
     closure,
+    get_free,
 
     inline fn lookup(op: @This()) Definition {
         return switch (op) {
@@ -68,6 +69,7 @@ pub const Opcode = enum(u8) {
             .get_local => .{ .name = "OpGetLocal", .operand_widths = &.{1} },
             .get_builtin => .{ .name = "OpGetBuiltin", .operand_widths = &.{1} },
             .closure => .{ .name = "OpClosure", .operand_widths = &.{ 2, 1 } },
+            .get_free => .{ .name = "OpGetFree", .operand_widths = &.{1} },
         };
     }
 

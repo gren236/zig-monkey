@@ -48,6 +48,7 @@ const string_arena_size = 1024 * 1024 * 5; // 5mb
 const array_arena_size = 1024 * 1024 * 5; // 5mb
 const hash_arena_size = 1024 * 1024 * 5; // 5mb
 const builtins_arena_size = 1024 * 1024 * 5; // 5mb
+const free_vars_arena_size = 1024 * 1024 * 5; // 5mb
 
 const true_obj: object.Object = .{ .boolean = .{ .value = true } };
 const false_obj: object.Object = .{ .boolean = .{ .value = false } };
@@ -64,6 +65,8 @@ hash_arena: [hash_arena_size]u8,
 hash_fba: std.heap.FixedBufferAllocator,
 builtins_arena: [builtins_arena_size]u8,
 builtins_fba: std.heap.FixedBufferAllocator,
+free_vars_arena: [free_vars_arena_size]u8,
+free_vars_fba: std.heap.FixedBufferAllocator,
 
 frames: [max_frames]Frame,
 frames_index: usize,
@@ -87,12 +90,15 @@ pub fn create(alloc: std.mem.Allocator) !*Self {
         .hash_fba = undefined,
         .builtins_arena = undefined,
         .builtins_fba = undefined,
+        .free_vars_arena = undefined,
+        .free_vars_fba = undefined,
     };
 
     self.string_fba = .init(&self.string_arena);
     self.array_fba = .init(&self.array_arena);
     self.hash_fba = .init(&self.hash_arena);
     self.builtins_fba = .init(&self.builtins_arena);
+    self.free_vars_fba = .init(&self.free_vars_arena);
 
     return self;
 }
@@ -253,13 +259,27 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
             },
             .closure => {
                 const const_index = code.readOperandInt(2, ins[ip + 1 ..][0..2]);
-                _ = code.readOperandInt(1, ins[ip + 3 ..][0..1]); // TODO implement
+                const num_free = code.readOperandInt(1, ins[ip + 3 ..][0..1]);
                 self.currentFrame().ip += 3;
+
+                const free_vars_alloc = self.free_vars_fba.allocator();
+                var free = try free_vars_alloc.alloc(object.Object, num_free);
+                for (0..num_free) |i| {
+                    free[i] = self.stack[self.sp - num_free + i];
+                }
+                self.sp = self.sp - num_free;
 
                 try self.push(.{ .closure = .{
                     .func = &bytecode.constants[const_index].comp_func,
-                    .free = &.{},
+                    .free = free,
                 } });
+            },
+            .get_free => {
+                const width = 1;
+                const free_index = code.readOperandInt(width, ins[ip + 1 ..][0..width]);
+                self.currentFrame().ip += width;
+
+                try self.push(self.currentFrame().cl.free[free_index]);
             },
             .nil => try self.push(nil),
         }
@@ -734,6 +754,34 @@ test "first class functions" {
             \\ returnsOneReturner()();
             ,
             .expected = .{ .int = 1 },
+        },
+    };
+
+    try runVmTests(tests);
+}
+
+test "closures" {
+    const tests: []const VmTestCase = &.{
+        .{
+            .input =
+            \\ let newClosure = fn(a) {
+            \\     fn() { a; };
+            \\ };
+            \\ let closure = newClosure(99);
+            \\ closure();
+            ,
+            .expected = .{ .int = 99 },
+        },
+        .{
+            .input =
+            \\ let newAdder = fn(a, b) {
+            \\     let c = a + b;
+            \\     fn(d) { c + d };
+            \\ };
+            \\ let adder = newAdder(1, 2);
+            \\ adder(8);
+            ,
+            .expected = .{ .int = 11 },
         },
     };
 
