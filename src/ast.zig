@@ -688,6 +688,7 @@ pub const IfExpression = struct {
 
 pub const FunctionLiteral = struct {
     token: Lexer.Token,
+    name: ?[]const u8,
     parameters: []Identifier,
     body: *const BlockStatement,
 
@@ -697,6 +698,7 @@ pub const FunctionLiteral = struct {
 
         return .{
             .token = tok,
+            .name = null,
             .parameters = params,
             .body = block_ptr,
         };
@@ -706,6 +708,7 @@ pub const FunctionLiteral = struct {
         var new = FunctionLiteral{
             .token = self.token,
             .parameters = try alloc.alloc(Identifier, self.parameters.len),
+            .name = if (self.name) |name| try alloc.dupe(u8, name) else null,
             .body = undefined,
         };
 

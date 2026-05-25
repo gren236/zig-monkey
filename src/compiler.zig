@@ -16,6 +16,7 @@ const SymbolTable = struct {
         local,
         builtin,
         free,
+        function,
     };
 
     const Symbol = struct {
@@ -79,28 +80,32 @@ const SymbolTable = struct {
     }
 
     pub fn define(self: *@This(), alloc: std.mem.Allocator, name: []const u8) !Symbol {
+        const new_name = if (self.store.get(name) != null) name else try alloc.dupe(u8, name);
+
         const symbol: Symbol = .{
-            .name = try alloc.dupe(u8, name),
+            .name = new_name,
             .scope = if (self.outer != null) .local else .global,
             .index = self.num_definitions,
         };
         errdefer alloc.free(symbol.name);
 
-        try self.store.put(alloc, symbol.name, symbol);
+        try self.store.put(alloc, new_name, symbol);
         self.num_definitions += 1;
 
         return symbol;
     }
 
     pub fn defineBuiltin(self: *@This(), alloc: std.mem.Allocator, index: usize, name: []const u8) !Symbol {
+        const new_name = if (self.store.get(name) != null) name else try alloc.dupe(u8, name);
+
         const symbol: Symbol = .{
-            .name = try alloc.dupe(u8, name),
+            .name = new_name,
             .scope = .builtin,
             .index = index,
         };
         errdefer alloc.free(symbol.name);
 
-        try self.store.put(alloc, symbol.name, symbol);
+        try self.store.put(alloc, new_name, symbol);
 
         return symbol;
     }
@@ -108,14 +113,32 @@ const SymbolTable = struct {
     pub fn defineFree(self: *@This(), alloc: std.mem.Allocator, original: Symbol) !Symbol {
         try self.free_symbols.append(alloc, original);
 
+        const new_name =
+            if (self.store.get(original.name) != null) original.name else try alloc.dupe(u8, original.name);
+
         const symbol: Symbol = .{
-            .name = try alloc.dupe(u8, original.name),
+            .name = new_name,
             .scope = .free,
             .index = self.free_symbols.items.len - 1,
         };
         errdefer alloc.free(symbol.name);
 
-        try self.store.put(alloc, symbol.name, symbol);
+        try self.store.put(alloc, new_name, symbol);
+
+        return symbol;
+    }
+
+    pub fn defineFunctionName(self: *@This(), alloc: std.mem.Allocator, name: []const u8) !Symbol {
+        const new_name = if (self.store.get(name) != null) name else try alloc.dupe(u8, name);
+
+        const symbol: Symbol = .{
+            .name = new_name,
+            .scope = .function,
+            .index = 0,
+        };
+        errdefer alloc.free(symbol.name);
+
+        try self.store.put(alloc, new_name, symbol);
 
         return symbol;
     }
@@ -407,6 +430,35 @@ const SymbolTable = struct {
             try std.testing.expectEqual(null, secondLocal.resolve(alloc, name));
         }
     }
+
+    test "define and resolve function name" {
+        const alloc = std.testing.allocator;
+
+        var global = try create(alloc);
+        defer global.destroy(alloc);
+        _ = try global.defineFunctionName(alloc, "a");
+
+        const expected = Symbol{ .name = "a", .scope = .function, .index = 0 };
+
+        const result = global.resolve(alloc, expected.name);
+        try std.testing.expect(result != null);
+        try std.testing.expectEqualDeep(expected, result.?);
+    }
+
+    test "shadowing function name" {
+        const alloc = std.testing.allocator;
+
+        var global = try create(alloc);
+        defer global.destroy(alloc);
+        _ = try global.defineFunctionName(alloc, "a");
+        _ = try global.define(alloc, "a");
+
+        const expected = Symbol{ .name = "a", .scope = .global, .index = 0 };
+
+        const result = global.resolve(alloc, expected.name);
+        try std.testing.expect(result != null);
+        try std.testing.expectEqualDeep(expected, result.?);
+    }
 };
 
 const EmittedInstruction = struct {
@@ -584,8 +636,8 @@ fn compileStatement(self: *Self, alloc: std.mem.Allocator, node: *const ast.Node
             }
         },
         .let_stmt => |stmt| {
-            try self.compileExpression(alloc, stmt.value);
             const symbol = try self.symbol_table.define(alloc, stmt.name.value);
+            try self.compileExpression(alloc, stmt.value);
             _ = try self.emit(
                 alloc,
                 if (symbol.scope == .global) .set_global else .set_local,
@@ -597,6 +649,20 @@ fn compileStatement(self: *Self, alloc: std.mem.Allocator, node: *const ast.Node
             _ = try self.emit(alloc, .return_value, &.{});
         },
     }
+}
+
+fn loadSymbol(self: *Self, alloc: std.mem.Allocator, s: SymbolTable.Symbol) !void {
+    _ = try self.emit(
+        alloc,
+        switch (s.scope) {
+            .global => .get_global,
+            .local => .get_local,
+            .builtin => .get_builtin,
+            .free => .get_free,
+            .function => .current_closure,
+        },
+        if (s.scope != .function) &.{s.index} else &.{},
+    );
 }
 
 const Operator = enum {
@@ -689,16 +755,7 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
         },
         .ident => |ident_exp| {
             const symbol = self.symbol_table.resolve(alloc, ident_exp.value) orelse return Error.UndefinedVariable;
-            _ = try self.emit(
-                alloc,
-                switch (symbol.scope) {
-                    .global => .get_global,
-                    .local => .get_local,
-                    .builtin => .get_builtin,
-                    .free => .get_free,
-                },
-                &.{symbol.index},
-            );
+            try self.loadSymbol(alloc, symbol);
         },
         .string_literal => |str_exp| {
             const str: object.Object = .{ .string = .{ .value = str_exp.value } };
@@ -739,6 +796,8 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
         .fn_literal => |fn_exp| {
             try self.enterScope(alloc);
 
+            if (fn_exp.name) |name| _ = try self.symbol_table.defineFunctionName(alloc, name);
+
             for (fn_exp.parameters) |param| {
                 _ = try self.symbol_table.define(alloc, param.value);
             }
@@ -758,16 +817,7 @@ fn compileExpression(self: *Self, alloc: std.mem.Allocator, node: *const ast.Nod
             defer instructions.deinit(alloc);
 
             for (free_symbols.items) |sym| {
-                _ = try self.emit(
-                    alloc,
-                    switch (sym.scope) {
-                        .global => .get_global,
-                        .local => .get_local,
-                        .builtin => .get_builtin,
-                        .free => .get_free,
-                    },
-                    &.{sym.index},
-                );
+                try self.loadSymbol(alloc, sym);
             }
 
             const comp_fn: object.Object = .{
@@ -1448,6 +1498,75 @@ test "closures" {
                 &(try code.make(.constant, &.{0})),
                 &(try code.make(.set_global, &.{0})),
                 &(try code.make(.closure, &.{ 6, 0 })),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+    };
+
+    try runCompilerTests(tests);
+}
+
+test "recursive functions" {
+    const tests: []const CompilerTestCase = &.{
+        .{
+            .input =
+            \\ let countDown = fn(x) { countDown(x - 1); };
+            \\ countDown(1);
+            ,
+            .expected_constants = &.{
+                .{ .int = 1 },
+                .{ .instr = &.{
+                    &(try code.make(.current_closure, &.{})),
+                    &(try code.make(.get_local, &.{0})),
+                    &(try code.make(.constant, &.{0})),
+                    &(try code.make(.sub, &.{})),
+                    &(try code.make(.call, &.{1})),
+                    &(try code.make(.return_value, &.{})),
+                } },
+                .{ .int = 1 },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.closure, &.{ 1, 0 })),
+                &(try code.make(.set_global, &.{0})),
+                &(try code.make(.get_global, &.{0})),
+                &(try code.make(.constant, &.{2})),
+                &(try code.make(.call, &.{1})),
+                &(try code.make(.pop, &.{})),
+            }),
+        },
+        .{
+            .input =
+            \\ let wrapper = fn() {
+            \\     let countDown = fn(x) { countDown(x - 1); };
+            \\     countDown(1);
+            \\ };
+            \\ wrapper();
+            ,
+            .expected_constants = &.{
+                .{ .int = 1 },
+                .{ .instr = &.{
+                    &(try code.make(.current_closure, &.{})),
+                    &(try code.make(.get_local, &.{0})),
+                    &(try code.make(.constant, &.{0})),
+                    &(try code.make(.sub, &.{})),
+                    &(try code.make(.call, &.{1})),
+                    &(try code.make(.return_value, &.{})),
+                } },
+                .{ .int = 1 },
+                .{ .instr = &.{
+                    &(try code.make(.closure, &.{ 1, 0 })),
+                    &(try code.make(.set_local, &.{0})),
+                    &(try code.make(.get_local, &.{0})),
+                    &(try code.make(.constant, &.{2})),
+                    &(try code.make(.call, &.{1})),
+                    &(try code.make(.return_value, &.{})),
+                } },
+            },
+            .expected_instructions = @constCast(&[_]code.Instructions{
+                &(try code.make(.closure, &.{ 3, 0 })),
+                &(try code.make(.set_global, &.{0})),
+                &(try code.make(.get_global, &.{0})),
+                &(try code.make(.call, &.{0})),
                 &(try code.make(.pop, &.{})),
             }),
         },

@@ -119,7 +119,9 @@ fn parseLetStatement(self: *@This(), alloc: std.mem.Allocator) !ast.Node(.Statem
 
     self.nextToken();
 
-    const stmt_value = try self.parseExpression(alloc, .lowest);
+    var stmt_value = try self.parseExpression(alloc, .lowest);
+
+    if (@as(ast.ExpressionNode, stmt_value.val) == .fn_literal) stmt_value.val.fn_literal.name = stmt_name.value;
 
     if (self.peek_token.token_type == .SEMICOLON) self.nextToken();
 
@@ -821,6 +823,27 @@ test "function literal expression" {
     try std.testing.expectEqualStrings("x", body_infix.left.tokenLiteral());
     try std.testing.expectEqualStrings("+", body_infix.operator);
     try std.testing.expectEqualStrings("y", body_infix.right.tokenLiteral());
+}
+
+test "function literal with name" {
+    const input = "let myFunction = fn() { };";
+
+    const alloc = std.testing.allocator;
+
+    var l = Lexer.init(input);
+    var p = init(&l);
+    defer p.deinit(alloc);
+
+    var program = try p.parseProgram(alloc);
+    defer program.deinit(alloc);
+
+    try checkParserErrors(&p);
+    try std.testing.expectEqual(1, program.statements.len);
+
+    const let_stmt = program.statements[0].val.let_stmt;
+    const func = let_stmt.value.val.fn_literal;
+    try std.testing.expect(func.name != null);
+    try std.testing.expectEqualStrings("myFunction", func.name.?);
 }
 
 test "function parameters" {

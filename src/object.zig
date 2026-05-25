@@ -267,13 +267,10 @@ pub const Function = struct {
 
         const new_body = (try self.body.clone(alloc)).val.block_stmt;
 
-        const new_env = try alloc.create(Environment);
-        new_env.* = (try self.env.clone(alloc)).env;
-
         return .{ .func = .{
             .parameters = new_params,
             .body = new_body,
-            .env = new_env,
+            .env = self.env,
         } };
     }
 
@@ -284,8 +281,6 @@ pub const Function = struct {
         alloc.free(self.parameters);
 
         self.body.deinit(alloc);
-        self.env.deinit(alloc);
-        alloc.destroy(self.env);
     }
 };
 

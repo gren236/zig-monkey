@@ -281,6 +281,9 @@ pub fn run(self: *Self, bytecode: Compiler.Bytecode) !void {
 
                 try self.push(self.currentFrame().cl.free[free_index]);
             },
+            .current_closure => {
+                try self.push(.{ .closure = self.currentFrame().cl });
+            },
             .nil => try self.push(nil),
         }
     }
@@ -788,6 +791,58 @@ test "closures" {
     try runVmTests(tests);
 }
 
+test "recursive functions" {
+    const tests: []const VmTestCase = &.{
+        .{
+            .input =
+            \\ let countDown = fn(x) {
+            \\     if (x == 0) {
+            \\         return 0;
+            \\     } else {
+            \\         countDown(x - 1);
+            \\     }
+            \\ };
+            \\ countDown(1);
+            ,
+            .expected = .{ .int = 0 },
+        },
+        .{
+            .input =
+            \\ let countDown = fn(x) {
+            \\     if (x == 0) {
+            \\         return 0;
+            \\     } else {
+            \\         countDown(x - 1);
+            \\     }
+            \\ };
+            \\ let wrapper = fn() {
+            \\     countDown(1);
+            \\ };
+            \\ wrapper();
+            ,
+            .expected = .{ .int = 0 },
+        },
+        .{
+            .input =
+            \\ let wrapper = fn() {
+            \\     let countDown = fn(x) {
+            \\         if (x == 0) {
+            \\             return 0;
+            \\         } else {
+            \\             countDown(x - 1);
+            \\         }
+            \\     };
+            \\     countDown(1);
+            \\ };
+            \\ wrapper();
+            ,
+            .expected = .{ .int = 0 },
+        },
+    };
+
+    try runVmTests(tests);
+}
+
 test "calling functions with bindings" {
     const tests: []const VmTestCase = &.{
         .{
@@ -999,6 +1054,30 @@ test "builtin functions" {
         .{
             .input = "push(1, 1)",
             .expected = .{ .err = "argument to `push` must be ARRAY, got INTEGER" },
+        },
+    };
+
+    try runVmTests(tests);
+}
+
+test "recursive fibonacci" {
+    const tests: []const VmTestCase = &.{
+        .{
+            .input =
+            \\ let fibonacci = fn(x) {
+            \\     if (x == 0) {
+            \\         return 0;
+            \\     } else {
+            \\         if (x == 1) {
+            \\             return 1;
+            \\         } else {
+            \\             fibonacci(x - 1) + fibonacci(x - 2);
+            \\         }
+            \\     }
+            \\ };
+            \\ fibonacci(15);
+            ,
+            .expected = .{ .int = 610 },
         },
     };
 
